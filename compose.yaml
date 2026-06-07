@@ -1,0 +1,14 @@
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: opinions
+      POSTGRES_USER: opinions
+      POSTGRES_PASSWORD: opinions
+    ports:
+      - "5432:5432"
+    volumes:
+      - opinions-postgres:/var/lib/postgresql/data
+
+volumes:
+  opinions-postgres:
