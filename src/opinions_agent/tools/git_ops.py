@@ -1,3 +1,5 @@
+"""Constrained tools exposed by the host app."""
+
 from __future__ import annotations
 
 import os
@@ -37,36 +39,39 @@ def assert_relative_target(repo_dir: Path, target_file: str) -> Path:
     return target
 
 
-def assert_target_clean(repo_dir: Path, target_file: str) -> None:
-    status = run_git(repo_dir, "status", "--porcelain", "--", target_file)
+def assert_targets_clean(repo_dir: Path, target_files: list[str]) -> None:
+    status = run_git(repo_dir, "status", "--porcelain", "--", *target_files)
     if status:
-        raise GitToolError(f"target file is already dirty: {target_file}")
+        raise GitToolError(f"target files are already dirty: {status}")
 
 
-def commit_and_push_opinions_file(
+def commit_and_push_opinions_files(
     *,
     repo_dir: Path,
-    target_file: str,
+    target_files: list[str],
     branch: str,
     author_name: str,
     author_email: str,
-    message: str = "chore: append readwise summary",
+    message: str,
     push: bool = True,
 ) -> GitCommitResult:
     if not author_name or not author_email:
         raise GitToolError("git author name/email are required")
-    assert_relative_target(repo_dir, target_file)
+    if not target_files:
+        raise GitToolError("at least one target file is required")
+    for target_file in target_files:
+        assert_relative_target(repo_dir, target_file)
     if push:
         run_git(repo_dir, "fetch", "origin", branch)
-    unstaged_status = run_git(repo_dir, "status", "--porcelain", "--", target_file)
+    unstaged_status = run_git(repo_dir, "status", "--porcelain", "--", *target_files)
     if not unstaged_status:
         return GitCommitResult(changed=False, commit_sha=None)
-    run_git(repo_dir, "add", "--", target_file)
-    staged_files = run_git(repo_dir, "diff", "--cached", "--name-only", "--", target_file)
+    run_git(repo_dir, "add", "--", *target_files)
+    staged_files = run_git(repo_dir, "diff", "--cached", "--name-only", "--", *target_files)
     staged = [line.strip() for line in staged_files.splitlines() if line.strip()]
-    if staged != [target_file]:
-        run_git(repo_dir, "reset", "--", target_file)
-        raise GitToolError(f"refusing to commit files other than {target_file}: {staged}")
+    if not staged or any(staged_file not in target_files for staged_file in staged):
+        run_git(repo_dir, "reset", "--", *target_files)
+        raise GitToolError(f"refusing to commit files other than {target_files}: {staged}")
     env = {
         **os.environ,
         "GIT_AUTHOR_NAME": author_name,
@@ -74,7 +79,7 @@ def commit_and_push_opinions_file(
         "GIT_COMMITTER_NAME": author_name,
         "GIT_COMMITTER_EMAIL": author_email,
     }
-    run_git(repo_dir, "commit", "-m", message, "--", target_file, env=env)
+    run_git(repo_dir, "commit", "-m", message, "--", *target_files, env=env)
     sha = run_git(repo_dir, "rev-parse", "HEAD")
     if push:
         run_git(repo_dir, "push", "origin", branch)

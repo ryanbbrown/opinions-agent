@@ -1,407 +1,392 @@
 from __future__ import annotations
 
-import asyncio
+import shutil
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from conftest import seed_corpus
 from sqlalchemy import select
 
-from opinions_agent.agent import AgentOutput, DeterministicSummaryAgent, TelegramMessageSpec
+from opinions_agent.agent import DeterministicOpinionAgent, OpinionChangeProposal, OpinionProposalOutput
 from opinions_agent.config import Settings
-from opinions_agent.models import ReadwiseHighlight, RunStatus, SummaryRun, SummaryRunHighlight, TelegramInteraction
+from opinions_agent.corpus import CorpusPaths, load_state, read_decisions
+from opinions_agent.fsio import read_json, read_jsonl
+from opinions_agent.models import OpinionProposal, OpinionRun, ProposalStatus, RunStatus, TelegramInteraction
+from opinions_agent.selection import RunPaths
 from opinions_agent.telegram import FakeTelegramClient
-from opinions_agent.tools.git_ops import commit_and_push_opinions_file, run_git
-from opinions_agent.workflow import handle_telegram_update, select_unsummarized_highlights, summarize_recent, transition
+from opinions_agent.tools.git_ops import GitToolError, run_git
+from opinions_agent.workflow import (
+    ActiveRunError,
+    handle_telegram_update,
+    send_proposal_messages,
+    start_opinion_run,
+    transition,
+)
+
+WINDOW_START = datetime(2026, 6, 1, tzinfo=UTC)
+WINDOW_END = datetime(2026, 6, 12, tzinfo=UTC)
 
 
-def add_highlight(session, *, readwise_id: str = "h1", text: str = "Highlight text") -> ReadwiseHighlight:
-    highlight = ReadwiseHighlight(
-        readwise_id=readwise_id,
-        document_id="doc",
-        document_title="A Book",
-        document_author="Author",
-        text=text,
-    )
-    session.add(highlight)
-    session.commit()
-    return highlight
+class EmptyBatchAgent(DeterministicOpinionAgent):
+    async def propose(self, **kwargs):
+        return OpinionProposalOutput(status="awaiting_user", proposals=[]), {"model": "empty"}
 
 
-class FailingRevisionAgent(DeterministicSummaryAgent):
+class InvalidProposalAgent(DeterministicOpinionAgent):
+    async def propose(self, **kwargs):
+        proposal = OpinionChangeProposal(
+            proposal_id="prop_bad",
+            kind="add_opinion",
+            title="Bad",
+            proposed_text="Bad",
+            rationale="Unknown supporting highlight.",
+            supporting_highlight_ids=["rw:does-not-exist"],
+        )
+        return OpinionProposalOutput(status="awaiting_user", proposals=[proposal]), None
+
+
+class FailingRevisionAgent(DeterministicOpinionAgent):
     async def revise(self, **kwargs):
         raise RuntimeError("revision failed")
 
 
-def test_selection_skips_blocking_statuses_but_not_failed(session) -> None:
-    blocked = add_highlight(session, readwise_id="blocked")
-    failed = add_highlight(session, readwise_id="failed")
-    fresh = add_highlight(session, readwise_id="fresh")
-    blocked_run = SummaryRun(status=RunStatus.AWAITING_USER.value)
-    failed_run = SummaryRun(status=RunStatus.FAILED.value)
-    session.add_all([blocked_run, failed_run])
-    session.flush()
-    session.add_all(
-        [
-            SummaryRunHighlight(summary_run_id=blocked_run.id, readwise_highlight_id=blocked.id),
-            SummaryRunHighlight(summary_run_id=failed_run.id, readwise_highlight_id=failed.id),
-        ]
-    )
-    session.commit()
-
-    selected_ids = {h.readwise_id for h in select_unsummarized_highlights(session, 10)}
-
-    assert selected_ids == {failed.readwise_id, fresh.readwise_id}
-
-
-def test_invalid_status_transition_fails_loudly(session) -> None:
-    run = SummaryRun(status=RunStatus.COMMITTED.value)
-    with pytest.raises(ValueError):
-        transition(run, RunStatus.AWAITING_USER)
-
-
-@pytest.mark.asyncio
-async def test_free_text_without_reply_requires_single_pending_run(
-    session,
-    settings: Settings,
-    opinions_repo: Path,
-) -> None:
-    session.add_all(
-        [
-            SummaryRun(status=RunStatus.AWAITING_USER.value),
-            SummaryRun(status=RunStatus.AWAITING_USER.value),
-        ]
-    )
-    session.commit()
-
-    result = await handle_telegram_update(
+async def start_run(session, settings, telegram, agent=None) -> OpinionRun | None:
+    return await start_opinion_run(
         session=session,
         settings=settings,
-        agent=DeterministicSummaryAgent(),
-        telegram=FakeTelegramClient(),
-        update={"update_id": 10, "message": {"message_id": 99, "chat": {"id": 12345}, "text": "please revise"}},
-    )
-
-    assert result == "no_pending_run"
-
-
-@pytest.mark.asyncio
-async def test_telegram_duplicate_update_is_ignored(session, settings: Settings, opinions_repo: Path) -> None:
-    add_highlight(session)
-    telegram = FakeTelegramClient()
-    run = await summarize_recent(
-        session=session,
-        settings=settings,
-        agent=DeterministicSummaryAgent(),
+        agent=agent or DeterministicOpinionAgent(),
         telegram=telegram,
-        limit=1,
+        window_start=WINDOW_START,
+        window_end=WINDOW_END,
     )
-    assert run is not None
-    update = {
-        "update_id": 42,
+
+
+def proposal_by_pid(session, run: OpinionRun, proposal_id: str, batch: int | None = None) -> OpinionProposal:
+    proposal = session.scalar(
+        select(OpinionProposal).where(
+            OpinionProposal.opinion_run_id == run.id,
+            OpinionProposal.proposal_id == proposal_id,
+            OpinionProposal.batch == (batch or run.batch),
+        )
+    )
+    assert proposal is not None
+    return proposal
+
+
+def callback_update(update_id: int, proposal_db_id: int, action: str, chat_id: int = 12345) -> dict:
+    return {
+        "update_id": update_id,
         "callback_query": {
-            "id": "cb-dup",
-            "data": f"run:{run.id}:reject",
-            "message": {"message_id": 1, "chat": {"id": settings.telegram_allowed_chat_id}},
+            "id": f"cb-{update_id}",
+            "data": f"prop:{proposal_db_id}:{action}",
+            "message": {"message_id": 1, "chat": {"id": chat_id}},
         },
     }
 
-    assert await handle_telegram_update(
-        session=session, settings=settings, agent=DeterministicSummaryAgent(), telegram=telegram, update=update
-    ) == "rejected"
-    assert await handle_telegram_update(
-        session=session, settings=settings, agent=DeterministicSummaryAgent(), telegram=telegram, update=update
-    ) == "duplicate"
 
-
-@pytest.mark.asyncio
-async def test_stale_callback_does_not_mutate_committed_run(session, settings: Settings, opinions_repo: Path) -> None:
-    add_highlight(session)
-    telegram = FakeTelegramClient()
-    run = await summarize_recent(
+async def handle(session, settings, telegram, update, agent=None) -> str:
+    return await handle_telegram_update(
         session=session,
         settings=settings,
-        agent=DeterministicSummaryAgent(),
+        agent=agent or DeterministicOpinionAgent(),
         telegram=telegram,
-        limit=1,
+        update=update,
     )
-    assert run is not None
-    run.status = RunStatus.COMMITTED.value
+
+
+async def test_active_run_blocks_new_run(session, settings: Settings, opinions_repo: Path) -> None:
+    seed_corpus(settings)
+    session.add(
+        OpinionRun(status=RunStatus.AWAITING_USER.value, window_start=WINDOW_START, window_end=WINDOW_END)
+    )
     session.commit()
 
-    result = await handle_telegram_update(
-        session=session,
-        settings=settings,
-        agent=DeterministicSummaryAgent(),
-        telegram=telegram,
-        update={
-            "update_id": 50,
-            "callback_query": {
-                "id": "cb-stale",
-                "data": f"run:{run.id}:approve",
-                "message": {"message_id": 1, "chat": {"id": settings.telegram_allowed_chat_id}},
-            },
-        },
-    )
-
-    assert result == "stale"
-    assert session.get(SummaryRun, run.id).status == RunStatus.COMMITTED.value
+    with pytest.raises(ActiveRunError):
+        await start_run(session, settings, FakeTelegramClient())
 
 
-@pytest.mark.asyncio
-async def test_full_e2e_simulated_telegram_approval_commits_only_target(
+async def test_start_run_writes_bundle_and_sends_per_proposal_messages(
     session, settings: Settings, opinions_repo: Path
 ) -> None:
-    add_highlight(session, text="Good systems preserve provenance and make review cheap.")
+    seed_corpus(settings)
     telegram = FakeTelegramClient()
-    run = await summarize_recent(
-        session=session,
-        settings=settings,
-        agent=DeterministicSummaryAgent(),
-        telegram=telegram,
-        limit=1,
-    )
+
+    run = await start_run(session, settings, telegram)
+
     assert run is not None
     assert run.status == RunStatus.AWAITING_USER.value
-    assert "Readwise Summary" not in (opinions_repo / "TEST_OPINIONS.md").read_text(encoding="utf-8")
-
-    result = await handle_telegram_update(
-        session=session,
-        settings=settings,
-        agent=DeterministicSummaryAgent(),
-        telegram=telegram,
-        update={
-            "update_id": 100,
-            "callback_query": {
-                "id": "cb-approve",
-                "data": f"run:{run.id}:approve",
-                "message": {"message_id": telegram.sent[0][1].reply_to_message_id or 1001, "chat": {"id": 12345}},
-            },
-        },
-    )
-
-    assert result == "committed"
-    committed = session.get(SummaryRun, run.id)
-    assert committed.status == RunStatus.COMMITTED.value
-    assert committed.commit_sha
-    assert len(telegram.sent) == 2
-    assert telegram.sent[1][1].text.startswith(f"Committed summary for run {run.id}:")
-    target_text = (opinions_repo / "TEST_OPINIONS.md").read_text(encoding="utf-8")
-    assert "Good systems preserve provenance" in target_text
-    assert run_git(opinions_repo, "diff", "--name-only", "HEAD~1", "HEAD") == "TEST_OPINIONS.md"
-    assert run_git(opinions_repo, "status", "--porcelain") == ""
+    run_dir = RunPaths(settings.runs_dir).active_run_dir(run.id)
+    assert sorted(p.name for p in run_dir.iterdir()) == [
+        "brief.md",
+        "selected-documents.jsonl",
+        "selected-highlights.jsonl",
+    ]
+    proposals = list(session.scalars(select(OpinionProposal).where(OpinionProposal.opinion_run_id == run.id)))
+    assert sorted(p.proposal_id for p in proposals) == ["prop_add", "prop_remove", "prop_sources", "prop_update"]
+    assert len(telegram.sent) == 4
+    for _, spec in telegram.sent:
+        assert [button.text for button in spec.buttons] == ["Approve", "Reject", "Revise"]
 
 
-def test_outbound_send_crash_window_is_not_retried(session, settings: Settings) -> None:
-    run = SummaryRun(status=RunStatus.AWAITING_USER.value)
-    session.add(run)
-    session.flush()
-    session.add(
-        TelegramInteraction(
-            direction="outbound",
-            idempotency_key=f"summary-run:{run.id}:message:0",
-            summary_run_id=run.id,
-            chat_id=settings.telegram_allowed_chat_id,
-            status="sending",
-        )
-    )
-    session.commit()
+async def test_no_highlights_in_window_creates_no_run(session, settings: Settings, opinions_repo: Path) -> None:
+    seed_corpus(settings, highlight_count=0)
 
-    from opinions_agent.workflow import send_agent_messages
+    run = await start_run(session, settings, FakeTelegramClient())
 
+    assert run is None
+    assert session.scalar(select(OpinionRun)) is None
+
+
+async def test_approve_add_opinion_applies_commits_and_records_decision(
+    session, settings: Settings, opinions_repo: Path
+) -> None:
+    seed_corpus(settings)
     telegram = FakeTelegramClient()
-    asyncio.run(
-        send_agent_messages(
-            session=session,
-            settings=settings,
-            telegram=telegram,
-            run=run,
-            output=AgentOutput(status="awaiting_user", telegram_messages=[TelegramMessageSpec(text="hello")]),
-        )
-    )
+    run = await start_run(session, settings, telegram)
+    (opinions_repo / "UNRELATED.md").write_text("dirty unrelated\n", encoding="utf-8")
+    proposal = proposal_by_pid(session, run, "prop_add")
 
-    interaction = session.scalar(select(TelegramInteraction).where(TelegramInteraction.summary_run_id == run.id))
-    assert interaction.status == "uncertain"
-    assert telegram.sent == []
+    result = await handle(session, settings, telegram, callback_update(100, proposal.id, "approve"))
+
+    assert result == "applied"
+    assert proposal.status == ProposalStatus.APPROVED.value
+    assert proposal.commit_sha
+    assert proposal.applied_opinion_id == "opinion-000003"
+    opinions_text = (opinions_repo / "OPINIONS.md").read_text(encoding="utf-8")
+    assert "<!-- opinion-id: opinion-000003 -->" in opinions_text
+    assert "## 3." in opinions_text
+    sources = read_jsonl(opinions_repo / "OPINIONS_SOURCES.jsonl")
+    assert {"opinion-000003"} == {row["opinion_id"] for row in sources if row["highlight_id"] == "rw:h0"}
+    assert sources[-1]["highlight_text"].startswith("Durable systems")
+    decisions = read_decisions(CorpusPaths(settings.opinions_data_dir))
+    assert decisions[-1].decision == "approved"
+    assert decisions[-1].opinion_id == "opinion-000003"
+    committed_files = set(run_git(opinions_repo, "diff", "--name-only", "HEAD~1", "HEAD").splitlines())
+    assert committed_files == {"OPINIONS.md", "OPINIONS_SOURCES.jsonl"}
+    assert run_git(opinions_repo, "status", "--porcelain") == "M UNRELATED.md"
+    assert run.status == RunStatus.AWAITING_USER.value
+    assert telegram.sent[-1][1].text.startswith("Applied prop_add")
 
 
-@pytest.mark.asyncio
-async def test_revision_sends_new_approval_message(session, settings: Settings, opinions_repo: Path) -> None:
-    add_highlight(session, text="Original highlight text")
+async def test_reject_records_decision_without_mutation(session, settings: Settings, opinions_repo: Path) -> None:
+    seed_corpus(settings)
     telegram = FakeTelegramClient()
-    run = await summarize_recent(
-        session=session,
-        settings=settings,
-        agent=DeterministicSummaryAgent(),
-        telegram=telegram,
-        limit=1,
-    )
+    run = await start_run(session, settings, telegram)
+    before = (opinions_repo / "OPINIONS.md").read_text(encoding="utf-8")
+    proposal = proposal_by_pid(session, run, "prop_remove")
+
+    result = await handle(session, settings, telegram, callback_update(101, proposal.id, "reject"))
+
+    assert result == "rejected"
+    assert proposal.status == ProposalStatus.REJECTED.value
+    assert (opinions_repo / "OPINIONS.md").read_text(encoding="utf-8") == before
+    decisions = read_decisions(CorpusPaths(settings.opinions_data_dir))
+    assert decisions[-1].decision == "rejected"
+    assert decisions[-1].kind == "remove_opinion"
+
+
+async def test_run_completes_and_advances_cursor_after_all_proposals_terminal(
+    session, settings: Settings, opinions_repo: Path
+) -> None:
+    seed_corpus(settings)
+    telegram = FakeTelegramClient()
+    run = await start_run(session, settings, telegram)
+    proposals = list(session.scalars(select(OpinionProposal).where(OpinionProposal.opinion_run_id == run.id)))
+
+    for index, proposal in enumerate(proposals):
+        action = "approve" if proposal.kind != "remove_opinion" else "reject"
+        await handle(session, settings, telegram, callback_update(200 + index, proposal.id, action))
+
+    assert run.status == RunStatus.COMPLETED.value
+    state = load_state(CorpusPaths(settings.opinions_data_dir))
+    assert state.workflow.last_completed_window_start == "2026-06-01T00:00:00+00:00"
+    assert state.workflow.last_completed_window_end == "2026-06-12T00:00:00+00:00"
+    run_paths = RunPaths(settings.runs_dir)
+    assert not run_paths.active_run_dir(run.id).exists()
+    final = read_json(run_paths.completed_run_dir(run.id) / "final.json")
+    assert final["status"] == "completed"
+    assert len(final["proposals"]) == 4
+
+
+async def test_duplicate_update_is_ignored(session, settings: Settings, opinions_repo: Path) -> None:
+    seed_corpus(settings)
+    telegram = FakeTelegramClient()
+    run = await start_run(session, settings, telegram)
+    proposal = proposal_by_pid(session, run, "prop_sources")
+    update = callback_update(300, proposal.id, "reject")
+
+    assert await handle(session, settings, telegram, update) == "rejected"
+    assert await handle(session, settings, telegram, update) == "duplicate"
+
+
+async def test_stale_callback_does_not_mutate_terminal_proposal(
+    session, settings: Settings, opinions_repo: Path
+) -> None:
+    seed_corpus(settings)
+    telegram = FakeTelegramClient()
+    run = await start_run(session, settings, telegram)
+    proposal = proposal_by_pid(session, run, "prop_update")
+    await handle(session, settings, telegram, callback_update(400, proposal.id, "reject"))
+
+    result = await handle(session, settings, telegram, callback_update(401, proposal.id, "approve"))
+
+    assert result == "stale"
+    assert proposal.status == ProposalStatus.REJECTED.value
+
+
+async def test_revision_supersedes_pending_batch_and_sends_new_messages(
+    session, settings: Settings, opinions_repo: Path
+) -> None:
+    seed_corpus(settings)
+    telegram = FakeTelegramClient()
+    run = await start_run(session, settings, telegram)
+    first_batch = proposal_by_pid(session, run, "prop_add")
     outbound = session.scalar(
         select(TelegramInteraction).where(
             TelegramInteraction.direction == "outbound",
-            TelegramInteraction.summary_run_id == run.id,
+            TelegramInteraction.opinion_proposal_id == first_batch.id,
         )
     )
+    sent_before = len(telegram.sent)
 
-    result = await handle_telegram_update(
-        session=session,
-        settings=settings,
-        agent=DeterministicSummaryAgent(),
-        telegram=telegram,
-        update={
-            "update_id": 2718,
+    result = await handle(
+        session,
+        settings,
+        telegram,
+        {
+            "update_id": 500,
             "message": {
-                "message_id": 2719,
+                "message_id": 501,
                 "chat": {"id": settings.telegram_allowed_chat_id},
                 "reply_to_message": {"message_id": outbound.message_id},
-                "text": "mention review speed",
+                "text": "tighten the wording",
             },
         },
     )
 
     assert result == "revised"
-    assert len(telegram.sent) == 2
-    assert "Revision note: mention review speed" in telegram.sent[1][1].text
-    interactions = list(
-        session.scalars(
-            select(TelegramInteraction)
-            .where(TelegramInteraction.direction == "outbound", TelegramInteraction.summary_run_id == run.id)
-            .order_by(TelegramInteraction.id)
-        )
-    )
-    assert [interaction.idempotency_key for interaction in interactions] == [
-        f"summary-run:{run.id}:proposal:0",
-        f"summary-run:{run.id}:revision:2718:0",
-    ]
+    assert run.status == RunStatus.AWAITING_USER.value
+    assert run.batch == 2
+    assert first_batch.status == ProposalStatus.SUPERSEDED.value
+    second_batch = proposal_by_pid(session, run, "prop_add", batch=2)
+    assert "tighten the wording" in (second_batch.proposed_text or "")
+    assert len(telegram.sent) == sent_before + 4
+
+    stale = await handle(session, settings, telegram, callback_update(502, first_batch.id, "approve"))
+    assert stale == "stale"
+
+    approved = await handle(session, settings, telegram, callback_update(503, second_batch.id, "approve"))
+    assert approved == "applied"
 
 
-@pytest.mark.asyncio
-async def test_revision_failure_marks_run_failed_and_records_update(
+async def test_revision_failure_marks_run_failed_and_dedupes(
     session, settings: Settings, opinions_repo: Path
 ) -> None:
-    add_highlight(session)
+    seed_corpus(settings)
     telegram = FakeTelegramClient()
-    run = await summarize_recent(
-        session=session,
-        settings=settings,
-        agent=DeterministicSummaryAgent(),
-        telegram=telegram,
-        limit=1,
-    )
-    outbound = session.scalar(
-        select(TelegramInteraction).where(
-            TelegramInteraction.direction == "outbound",
-            TelegramInteraction.summary_run_id == run.id,
-        )
-    )
-
+    run = await start_run(session, settings, telegram)
     update = {
-        "update_id": 314,
+        "update_id": 600,
         "message": {
-            "message_id": 315,
+            "message_id": 601,
             "chat": {"id": settings.telegram_allowed_chat_id},
-            "reply_to_message": {"message_id": outbound.message_id},
             "text": "make this sharper",
         },
     }
+
     with pytest.raises(RuntimeError, match="revision failed"):
-        await handle_telegram_update(
-            session=session,
-            settings=settings,
-            agent=FailingRevisionAgent(),
-            telegram=telegram,
-            update=update,
-        )
+        await handle(session, settings, telegram, update, agent=FailingRevisionAgent())
 
-    failed = session.get(SummaryRun, run.id)
-    assert failed.status == RunStatus.FAILED.value
-    assert failed.failure_reason == "revision failed"
-    assert await handle_telegram_update(
-        session=session,
-        settings=settings,
-        agent=FailingRevisionAgent(),
-        telegram=telegram,
-        update=update,
-    ) == "duplicate"
+    assert run.status == RunStatus.FAILED.value
+    assert run.failure_reason == "revision failed"
+    assert await handle(session, settings, telegram, update, agent=FailingRevisionAgent()) == "duplicate"
 
 
-def test_commit_tool_stages_only_target(session, settings: Settings, opinions_repo: Path) -> None:
-    (opinions_repo / "TEST_OPINIONS.md").write_text("target changed\n", encoding="utf-8")
-    (opinions_repo / "UNRELATED.md").write_text("dirty unrelated\n", encoding="utf-8")
+async def test_empty_proposal_batch_completes_run_and_advances_cursor(
+    session, settings: Settings, opinions_repo: Path
+) -> None:
+    seed_corpus(settings)
 
-    result = commit_and_push_opinions_file(
-        repo_dir=opinions_repo,
-        target_file="TEST_OPINIONS.md",
-        branch="main",
-        author_name=settings.opinions_git_author_name,
-        author_email=settings.opinions_git_author_email,
-    )
+    run = await start_run(session, settings, FakeTelegramClient(), agent=EmptyBatchAgent())
 
-    assert result.changed
-    assert run_git(opinions_repo, "diff", "--name-only", "HEAD~1", "HEAD") == "TEST_OPINIONS.md"
-    assert run_git(opinions_repo, "status", "--porcelain") == "M UNRELATED.md"
+    assert run is not None
+    assert run.status == RunStatus.COMPLETED.value
+    state = load_state(CorpusPaths(settings.opinions_data_dir))
+    assert state.workflow.last_completed_window_end == "2026-06-12T00:00:00+00:00"
 
 
-def test_commit_tool_leaves_pre_staged_unrelated_file_staged(settings: Settings, opinions_repo: Path) -> None:
-    (opinions_repo / "TEST_OPINIONS.md").write_text("target changed\n", encoding="utf-8")
-    (opinions_repo / "UNRELATED.md").write_text("staged unrelated\n", encoding="utf-8")
-    run_git(opinions_repo, "add", "UNRELATED.md")
+async def test_unknown_supporting_highlights_fail_run_loudly(
+    session, settings: Settings, opinions_repo: Path
+) -> None:
+    seed_corpus(settings)
 
-    result = commit_and_push_opinions_file(
-        repo_dir=opinions_repo,
-        target_file="TEST_OPINIONS.md",
-        branch="main",
-        author_name=settings.opinions_git_author_name,
-        author_email=settings.opinions_git_author_email,
-    )
+    with pytest.raises(ValueError, match="unknown supporting highlight ids"):
+        await start_run(session, settings, FakeTelegramClient(), agent=InvalidProposalAgent())
 
-    assert result.changed
-    assert run_git(opinions_repo, "diff", "--name-only", "HEAD~1", "HEAD") == "TEST_OPINIONS.md"
-    assert run_git(opinions_repo, "status", "--porcelain") == "M  UNRELATED.md"
+    run = session.scalar(select(OpinionRun))
+    assert run.status == RunStatus.FAILED.value
+    assert "rw:does-not-exist" in run.failure_reason
 
 
-def test_commit_tool_noops_when_target_unchanged(settings: Settings, opinions_repo: Path) -> None:
-    result = commit_and_push_opinions_file(
-        repo_dir=opinions_repo,
-        target_file="TEST_OPINIONS.md",
-        branch="main",
-        author_name=settings.opinions_git_author_name,
-        author_email=settings.opinions_git_author_email,
-    )
-
-    assert result.changed is False
-    assert result.commit_sha is None
-
-
-@pytest.mark.asyncio
-async def test_first_approval_can_create_missing_target_file(session, settings: Settings, opinions_repo: Path) -> None:
-    run_git(opinions_repo, "rm", "TEST_OPINIONS.md")
-    run_git(opinions_repo, "commit", "-m", "chore: remove test opinions")
-    run_git(opinions_repo, "push", "origin", "main")
-    add_highlight(session, text="The first approved summary should create the target file.")
+async def test_failed_push_marks_run_failed_with_recovery_instructions(
+    session, settings: Settings, opinions_repo: Path, tmp_path: Path
+) -> None:
+    seed_corpus(settings)
     telegram = FakeTelegramClient()
+    run = await start_run(session, settings, telegram)
+    proposal = proposal_by_pid(session, run, "prop_add")
+    shutil.rmtree(tmp_path / "remote.git")
 
-    run = await summarize_recent(
-        session=session,
-        settings=settings,
-        agent=DeterministicSummaryAgent(),
-        telegram=telegram,
-        limit=1,
+    with pytest.raises(GitToolError):
+        await handle(session, settings, telegram, callback_update(700, proposal.id, "approve"))
+
+    assert run.status == RunStatus.FAILED.value
+    assert "prop_add" in run.failure_reason
+    assert "push or reset manually" in run.failure_reason
+
+
+async def test_outbound_send_crash_window_is_not_retried(session, settings: Settings, opinions_repo: Path) -> None:
+    seed_corpus(settings)
+    telegram = FakeTelegramClient()
+    run = await start_run(session, settings, telegram)
+    proposal = proposal_by_pid(session, run, "prop_add")
+    interaction = session.scalar(
+        select(TelegramInteraction).where(TelegramInteraction.opinion_proposal_id == proposal.id)
     )
-    result = await handle_telegram_update(
-        session=session,
-        settings=settings,
-        agent=DeterministicSummaryAgent(),
-        telegram=telegram,
-        update={
-            "update_id": 777,
-            "callback_query": {
-                "id": "cb-create-target",
-                "data": f"run:{run.id}:approve",
-                "message": {"message_id": 1001, "chat": {"id": settings.telegram_allowed_chat_id}},
-            },
-        },
+    interaction.message_id = None
+    interaction.status = "sending"
+    session.commit()
+    telegram.sent.clear()
+
+    await send_proposal_messages(session=session, settings=settings, telegram=telegram, run=run)
+
+    assert interaction.status == "uncertain"
+    assert telegram.sent == []
+
+
+def test_invalid_status_transition_fails_loudly() -> None:
+    run = OpinionRun(status=RunStatus.COMPLETED.value, window_start=WINDOW_START, window_end=WINDOW_END)
+    with pytest.raises(ValueError):
+        transition(run, RunStatus.AWAITING_USER)
+
+
+async def test_free_text_without_reply_requires_single_pending_run(
+    session, settings: Settings, opinions_repo: Path
+) -> None:
+    session.add_all(
+        [
+            OpinionRun(status=RunStatus.AWAITING_USER.value, window_start=WINDOW_START, window_end=WINDOW_END),
+            OpinionRun(status=RunStatus.AWAITING_USER.value, window_start=WINDOW_START, window_end=WINDOW_END),
+        ]
+    )
+    session.commit()
+
+    result = await handle(
+        session,
+        settings,
+        FakeTelegramClient(),
+        {"update_id": 800, "message": {"message_id": 801, "chat": {"id": 12345}, "text": "please revise"}},
     )
 
-    assert result == "committed"
-    assert (opinions_repo / "TEST_OPINIONS.md").exists()
-    assert run_git(opinions_repo, "diff", "--name-only", "HEAD~1", "HEAD") == "TEST_OPINIONS.md"
+    assert result == "no_pending_run"
