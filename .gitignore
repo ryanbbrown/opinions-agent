@@ -14,3 +14,4 @@ coverage/
 
 __pycache__/
 .venv/
+.reviews/**/.logs/

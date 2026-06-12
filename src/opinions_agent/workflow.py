@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, Protocol
 
 from sqlalchemy import func, select
@@ -20,13 +21,13 @@ from opinions_agent.corpus import (
     CorpusPaths,
     OpinionDecision,
     append_decisions,
-    highlight_ids,
     init_data_dirs,
     load_state,
+    read_decisions,
     read_highlights,
     save_state,
 )
-from opinions_agent.fsio import write_jsonl_atomic, write_text_atomic
+from opinions_agent.fsio import read_jsonl, write_jsonl_atomic, write_text_atomic
 from opinions_agent.models import (
     NON_TERMINAL_RUN_STATUSES,
     OpinionProposal,
@@ -167,7 +168,7 @@ async def start_opinion_run(
             await send_proposal_messages(session=session, settings=settings, telegram=telegram, run=run)
         return run
     except Exception as exc:
-        if run.status not in {RunStatus.FAILED.value}:
+        if run.status in NON_TERMINAL_RUN_STATUSES:
             transition(run, RunStatus.FAILED)
         run.failure_reason = str(exc)
         session.commit()
@@ -179,11 +180,13 @@ def _store_proposal_batch(session: Session, settings: Settings, run: OpinionRun,
     if output.status == "needs_more_work":
         raise ValueError(f"agent returned needs_more_work: {output.notes or 'no notes'}")
     validate_proposals(output.proposals)
-    known = highlight_ids(CorpusPaths(settings.opinions_data_dir))
+    # Current selected highlights are the only admissible evidence for proposals;
+    # historical corpus highlights are context, not support.
+    selected = _selected_highlight_ids(run, settings)
     for proposal in output.proposals:
-        missing = [hid for hid in proposal.supporting_highlight_ids if hid not in known]
+        missing = [hid for hid in proposal.supporting_highlight_ids if hid not in selected]
         if missing:
-            raise ValueError(f"{proposal.proposal_id}: unknown supporting highlight ids: {missing}")
+            raise ValueError(f"{proposal.proposal_id}: supporting highlights not in current run selection: {missing}")
     if not output.proposals:
         transition(run, RunStatus.COMPLETED)
         _advance_workflow_cursor(settings, run)
@@ -430,18 +433,20 @@ async def _handle_message(
             await send_proposal_messages(session=session, settings=settings, telegram=telegram, run=run)
         return "revised"
     except Exception as exc:
-        if run.status != RunStatus.FAILED.value:
+        if run.status in NON_TERMINAL_RUN_STATUSES:
             transition(run, RunStatus.FAILED)
         run.failure_reason = str(exc)
         session.commit()
         raise
 
 
-def _run_dir(run: OpinionRun, settings: Settings) -> Any:
-    from pathlib import Path
-
+def _run_dir(run: OpinionRun, settings: Settings) -> Path:
     configured = (run.input_paths or {}).get("dir")
     return Path(configured) if configured else RunPaths(settings.runs_dir).active_run_dir(run.id)
+
+
+def _selected_highlight_ids(run: OpinionRun, settings: Settings) -> set[str]:
+    return {str(row["highlight_id"]) for row in read_jsonl(_run_dir(run, settings) / "selected-highlights.jsonl")}
 
 
 def _supersede_pending_proposals(session: Session, run: OpinionRun) -> None:
@@ -486,7 +491,7 @@ async def approve_proposal(
         )
         return "applied"
     except (GitToolError, OSError, ValueError) as exc:
-        if run.status != RunStatus.FAILED.value:
+        if run.status in NON_TERMINAL_RUN_STATUSES:
             transition(run, RunStatus.FAILED)
         run.failure_reason = (
             f"failed to apply proposal {proposal.proposal_id}: {exc}. "
@@ -534,9 +539,11 @@ def _append_decision(settings: Settings, run: OpinionRun, proposal: OpinionPropo
 def _apply_proposal_files(settings: Settings, proposal: OpinionProposal) -> tuple[str | None, str | None]:
     """Apply one approved proposal to the opinions repo and commit only the allowed files."""
     ensure_opinions_repo(settings)
+    # Assert cleanliness before ensure_repo_file: a missing file touched into existence
+    # would otherwise read as dirty and block the first apply.
+    assert_targets_clean(settings.opinions_repo_dir, [settings.opinions_target_file, settings.opinions_sources_file])
     target = ensure_repo_file(settings, settings.opinions_target_file)
     sources_path = ensure_repo_file(settings, settings.opinions_sources_file)
-    assert_targets_clean(settings.opinions_repo_dir, [settings.opinions_target_file, settings.opinions_sources_file])
 
     corpus = CorpusPaths(settings.opinions_data_dir)
     highlights_by_id = {row.highlight_id: row for row in read_highlights(corpus)}
@@ -565,7 +572,12 @@ def _apply_proposal_files(settings: Settings, proposal: OpinionProposal) -> tupl
         ]
 
     if proposal.kind == "add_opinion":
-        existing_ids = {opinion.opinion_id for opinion in doc.opinions} | {row["opinion_id"] for row in sources}
+        # Include decision-log IDs so removing the highest-numbered opinion (which purges
+        # its source rows) can never cause a stable ID to be reissued.
+        decision_ids = {d.opinion_id for d in read_decisions(corpus) if d.opinion_id}
+        existing_ids = (
+            {opinion.opinion_id for opinion in doc.opinions} | {row["opinion_id"] for row in sources} | decision_ids
+        )
         applied_opinion_id = next_opinion_id(existing_ids)
         doc = add_opinion(
             doc, opinion_id=applied_opinion_id, title=proposal.title or "", body=proposal.proposed_text or ""
@@ -675,28 +687,24 @@ def abandon_run(session: Session, settings: Settings, run: OpinionRun) -> None:
 
 
 def _find_run_for_message(session: Session, message: dict[str, Any]) -> OpinionRun | None:
+    """Revision feedback must be a reply to one of the pending run's proposal messages.
+
+    Free text without a reply is ignored so a stray message cannot supersede a pending
+    batch, and a reply to a completed run's message is never rerouted to the active run.
+    """
     reply_to = (message.get("reply_to_message") or {}).get("message_id")
-    if reply_to is not None:
-        outbound = session.scalar(
-            select(TelegramInteraction).where(
-                TelegramInteraction.direction == "outbound",
-                TelegramInteraction.message_id == int(reply_to),
-            )
-        )
-        if outbound and outbound.opinion_run_id:
-            run = session.get(OpinionRun, outbound.opinion_run_id)
-            if run and run.status == RunStatus.AWAITING_USER.value:
-                return run
-    pending = list(
-        session.scalars(
-            select(OpinionRun)
-            .where(OpinionRun.status == RunStatus.AWAITING_USER.value)
-            .order_by(OpinionRun.created_at.desc())
-            .limit(2)
+    if reply_to is None:
+        return None
+    outbound = session.scalar(
+        select(TelegramInteraction).where(
+            TelegramInteraction.direction == "outbound",
+            TelegramInteraction.message_id == int(reply_to),
         )
     )
-    if len(pending) == 1:
-        return pending[0]
+    if outbound and outbound.opinion_run_id:
+        run = session.get(OpinionRun, outbound.opinion_run_id)
+        if run and run.status == RunStatus.AWAITING_USER.value:
+            return run
     return None
 
 

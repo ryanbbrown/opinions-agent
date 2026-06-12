@@ -59,7 +59,10 @@ def append_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
 
 
 def upsert_jsonl(path: Path, rows: list[dict[str, Any]], key: str) -> int:
-    """Merge rows into a JSONL file by key, replacing existing rows. Returns the number of new rows."""
+    """Merge rows into a JSONL file by key, replacing existing rows in place. Returns the number of new rows.
+
+    Ordering contract: existing rows keep their file order; new keys are appended (dict insertion order).
+    """
     existing = read_jsonl(path)
     by_key = {row[key]: row for row in existing}
     inserted = 0

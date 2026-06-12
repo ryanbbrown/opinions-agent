@@ -41,8 +41,9 @@ failure details.
 3. The app sends one Telegram message per proposal with Approve / Reject / Revise buttons.
 4. Approve applies that proposal to `OPINIONS.md` + `OPINIONS_SOURCES.jsonl`, validates stable IDs and
    provenance, appends to `opinion-decisions.jsonl`, and commits/pushes only those two files. Reject records the
-   decision without mutating files. Replying to a proposal message revises the whole batch (the previous batch is
-   superseded).
+   decision without mutating files. Revision feedback must be sent as a Telegram *reply* to one of the run's
+   proposal messages; it revises the whole batch (pending proposals are superseded, already-approved ones stay
+   applied). Free text that is not a reply is ignored.
 5. When every proposal is terminal, the run completes and the workflow cursor in `state.json` advances.
 
 Each opinion in `OPINIONS.md` carries a hidden stable ID (`<!-- opinion-id: opinion-000013 -->`); visible numbers
@@ -60,6 +61,11 @@ uv run alembic upgrade head      # or: uv run opinions-agent init-db (creates ta
 Required local variables: `DATABASE_URL`, `READWISE_TOKEN`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_CHAT_ID`,
 `HARNESS_MODEL` (+ `OPENAI_API_KEY` for the default model), and the `OPINIONS_*` repo settings shown in
 `.env.example`.
+
+Safety default: `OPINIONS_TARGET_FILE` defaults to `TEST_OPINIONS.md` so local runs never touch the real
+`OPINIONS.md` by accident. Production (Railway) must set `OPINIONS_TARGET_FILE=OPINIONS.md` explicitly. Note that
+approvals push to `OPINIONS_REPO_URL`, which defaults to the real repo — point `OPINIONS_REPO_DIR`/`OPINIONS_REPO_URL`
+at a disposable repo when experimenting.
 
 ## Commands
 
@@ -109,7 +115,11 @@ Smoke checklist after a deploy:
    moved to `completed/`.
 
 If a push fails the run is marked failed with the git error in `failure_reason`; the local commit is preserved in
-`OPINIONS_REPO_DIR` — push or reset it manually, then `abandon-run` if needed.
+`OPINIONS_REPO_DIR` — push or reset it manually. Failed runs are terminal and do not block new runs, so no
+`abandon-run` is needed (that command is for runs stuck pending approval). Known v1 residual risk: if the process
+crashes between a successful push and the database commit, tapping Approve again re-applies the proposal — for
+`add_opinion` that would append a duplicate opinion under a fresh ID; inspect the repo before re-approving after a
+crash.
 
 ## Testing
 
