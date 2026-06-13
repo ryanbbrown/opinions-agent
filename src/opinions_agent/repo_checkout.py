@@ -28,12 +28,12 @@ def ensure_opinions_repo(settings: Settings) -> None:
         raise RuntimeError((result.stderr or result.stdout).strip())
 
 
-def resolve_target_path(settings: Settings) -> Path:
-    return assert_relative_target(settings.opinions_repo_dir, settings.opinions_target_file)
+def resolve_repo_file(settings: Settings, repo_file: str) -> Path:
+    return assert_relative_target(settings.opinions_repo_dir, repo_file)
 
 
-def ensure_target_file(settings: Settings) -> Path:
-    target = resolve_target_path(settings)
+def ensure_repo_file(settings: Settings, repo_file: str) -> Path:
+    target = resolve_repo_file(settings, repo_file)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.touch(exist_ok=True)
     return target

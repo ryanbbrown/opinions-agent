@@ -5,7 +5,7 @@ from collections.abc import Iterator
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from sqlalchemy.orm import Session
 
-from opinions_agent.agent import ThinHarnessSummaryAgent
+from opinions_agent.agent import ThinHarnessOpinionAgent
 from opinions_agent.config import get_settings
 from opinions_agent.db import make_engine, make_sessionmaker
 from opinions_agent.telegram import TelegramClient
@@ -39,7 +39,7 @@ async def telegram_webhook(
     result = await handle_telegram_update(
         session=session,
         settings=settings,
-        agent=ThinHarnessSummaryAgent(),
+        agent=ThinHarnessOpinionAgent(),
         telegram=TelegramClient(settings.telegram_bot_token),
         update=await request.json(),
     )

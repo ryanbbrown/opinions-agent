@@ -1,117 +1,127 @@
 # opinions-agent
 
-`opinions-agent` is a small Python app that syncs Readwise highlights, creates a summary proposal through a replaceable agent boundary, asks for Telegram approval, then appends the approved summary to a configured opinions repo file and commits only that file.
+`opinions-agent` syncs Readwise Reader documents, summaries, full content, and highlights into a durable
+filesystem corpus, deterministically selects the current window of highlights for each run, asks an agent to
+propose opinion changes, and applies each proposal to `OPINIONS.md` / `OPINIONS_SOURCES.jsonl` only after
+per-proposal Telegram approval.
 
-The first slice intentionally keeps side effects in the host app. The agent can read exported run inputs and the configured opinions target file, but approval, appending, Telegram sends, and git commits are app-owned.
+The app owns sync state, selection, approval, file mutations, and git commits. The agent only reads a restricted
+set of paths and returns structured proposals.
+
+## Storage shape
+
+Durable corpus (`OPINIONS_DATA_DIR`, default `.readwise`):
+
+```text
+state.json                 # app-owned sync + workflow cursor state
+documents.jsonl            # one normalized row per Reader document
+highlights.jsonl           # one normalized row per highlight (primary query surface)
+opinion-decisions.jsonl    # accepted/rejected proposal history
+documents/reader_<id>.md   # readable full document content
+raw/reader_<id>.json       # untouched API payloads (not agent context)
+memory/                    # placeholder memory files (no agent writes in v1)
+```
+
+Run bundles (`RUNS_DIR`, default `.runs`) hold active-run/debug artifacts only:
+
+```text
+active/<run_id>/brief.md, selected-highlights.jsonl, selected-documents.jsonl
+completed/<run_id>/final.json   # retained OPINIONS_COMPLETED_RUN_RETENTION_DAYS days (default 30)
+```
+
+The database keeps operational state only: runs, proposals, Telegram idempotency, ThinHarness resume state, and
+failure details.
+
+## Workflow
+
+1. `sync` pulls Reader v3 documents/highlights/notes into the corpus (`state.json` advances only after all
+   corpus writes succeed).
+2. `opinion-run` refuses to start while any run is non-terminal, selects highlights between the workflow cursor
+   and now, writes the run bundle, and asks the agent for proposals.
+3. The app sends one Telegram message per proposal with Approve / Reject / Revise buttons.
+4. Approve applies that proposal to `OPINIONS.md` + `OPINIONS_SOURCES.jsonl`, validates stable IDs and
+   provenance, appends to `opinion-decisions.jsonl`, and commits/pushes only those two files. Reject records the
+   decision without mutating files. Revision feedback must be sent as a Telegram *reply* to one of the run's
+   proposal messages; it revises the whole batch (pending proposals are superseded, already-approved ones stay
+   applied). Free text that is not a reply is ignored.
+5. When every proposal is terminal, the run completes and the workflow cursor in `state.json` advances.
+
+Each opinion in `OPINIONS.md` carries a hidden stable ID (`<!-- opinion-id: opinion-000013 -->`); visible numbers
+can be reordered later, the hidden ID is durable.
 
 ## Local Setup
 
-Install dependencies:
-
 ```bash
 uv sync
-```
-
-ThinHarness is installed from a pinned git dependency so local and Railway installs use the same deployable package source.
-
-Create local configuration:
-
-```bash
 cp .env.example .env
-```
-
-Required local variables:
-
-- `DATABASE_URL`
-- `READWISE_TOKEN`
-- `TELEGRAM_BOT_TOKEN`
-- `TELEGRAM_ALLOWED_CHAT_ID`
-- `HARNESS_MODEL`
-- `OPENAI_API_KEY` for the default `openai:gpt-5.2` model
-- `OPINIONS_REPO_URL`
-- `OPINIONS_REPO_BRANCH`
-- `OPINIONS_REPO_DIR`
-- `OPINIONS_TARGET_FILE`
-- `OPINIONS_GIT_AUTHOR_NAME`
-- `OPINIONS_GIT_AUTHOR_EMAIL`
-
-Start Postgres:
-
-```bash
 docker compose up -d postgres
+uv run alembic upgrade head      # or: uv run opinions-agent init-db (creates tables directly)
 ```
 
-Apply migrations:
+Required local variables: `DATABASE_URL`, `READWISE_TOKEN`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_CHAT_ID`,
+`HARNESS_MODEL` (+ `OPENAI_API_KEY` for the default model), and the `OPINIONS_*` repo settings shown in
+`.env.example`.
 
-```bash
-uv run alembic upgrade head
-```
-
-The development fallback command also creates tables directly, which is useful for SQLite test databases:
-
-```bash
-uv run opinions-agent init-db
-```
+Safety default: `OPINIONS_TARGET_FILE` defaults to `TEST_OPINIONS.md` so local runs never touch the real
+`OPINIONS.md` by accident. Production (Railway) must set `OPINIONS_TARGET_FILE=OPINIONS.md` explicitly. Note that
+approvals push to `OPINIONS_REPO_URL`, which defaults to the real repo — point `OPINIONS_REPO_DIR`/`OPINIONS_REPO_URL`
+at a disposable repo when experimenting.
 
 ## Commands
 
-Run the web service:
-
 ```bash
-uv run opinions-agent serve
-```
-
-Healthcheck:
-
-```bash
-curl http://localhost:8000/healthz
-```
-
-Manual local workflow:
-
-```bash
-uv run opinions-agent readwise-sync
-uv run opinions-agent summarize-recent --limit 10
-uv run opinions-agent telegram-poll
-```
-
-Daily cron entry point:
-
-```bash
-uv run opinions-agent daily-run
-```
-
-For deterministic local smoke runs without Telegram API sends:
-
-```bash
-OPINIONS_FAKE_TELEGRAM=1 uv run opinions-agent summarize-recent --limit 10 --deterministic-agent
-```
-
-## Telegram
-
-Railway should expose `POST /telegram/webhook`. Configure it with:
-
-```bash
+uv run opinions-agent serve            # FastAPI web service (Telegram webhook + /healthz)
+uv run opinions-agent init-runtime     # ensure data dirs, memory files, repo checkout, DB migrations
+uv run opinions-agent sync             # Reader -> filesystem corpus
+uv run opinions-agent opinion-run      # sync + select window + propose + request approval
+uv run opinions-agent abandon-run ID   # abandon a stuck pending run (cursor does not advance)
+uv run opinions-agent telegram-poll    # local alternative to the webhook
 uv run opinions-agent set-telegram-webhook https://your-service.up.railway.app/telegram/webhook
 ```
 
-If `TELEGRAM_WEBHOOK_SECRET` is set, webhook requests must include Telegram's `X-Telegram-Bot-Api-Secret-Token` header.
+Useful `opinion-run` flags: `--deterministic-agent` (no model calls), `--skip-sync`,
+`--window-start/--window-end` (ISO timestamps, override the workflow cursor).
 
-## Opinions Repo
+Deterministic local smoke run without Telegram sends:
 
-Local defaults point at:
-
-```text
-/Users/ryanbrown/code/ryanbbrown/TEST_OPINIONS.md
+```bash
+OPINIONS_FAKE_TELEGRAM=1 uv run opinions-agent opinion-run --deterministic-agent
 ```
 
-Railway should set `OPINIONS_REPO_DIR` to a writable app-owned directory or mounted volume. The app clones `OPINIONS_REPO_URL` when that directory is not already a git checkout, otherwise it fetches the configured branch. Push authentication should be configured in the repo URL or the Railway environment; for example, use a token-backed HTTPS URL stored as a Railway secret.
+## Railway
 
-The commit helper stages and commits only `OPINIONS_TARGET_FILE`, then pushes `origin OPINIONS_REPO_BRANCH`.
+Deploys build from this repo; the opinions repo and all durable files live outside the build:
+
+- Attach a volume. `OPINIONS_DATA_DIR`, `RUNS_DIR`, and `OPINIONS_REPO_DIR` default to
+  `$RAILWAY_VOLUME_MOUNT_PATH/{readwise,runs,opinions-repo}` when the mount env var is present, or set them
+  explicitly (e.g. `/app/data/readwise`). Volumes mount at container start, so all filesystem initialization is
+  runtime work (`init-runtime`), never build time.
+- Set `OPINIONS_REPO_URL` to a token-backed HTTPS URL; the repo is cloned/updated at runtime into
+  `OPINIONS_REPO_DIR`. Set `OPINIONS_TARGET_FILE=OPINIONS.md` and `OPINIONS_SOURCES_FILE=OPINIONS_SOURCES.jsonl`.
+- Run `uv run opinions-agent init-runtime` on deploy (pre-start), then `serve`.
+- Schedule `uv run opinions-agent opinion-run` weekly (Railway cron); biweekly is a schedule change, not a
+  storage change. The scheduler exits cleanly if a previous run is still pending approval.
+- Enable Railway volume backups for the mounted data directory; the opinions repo is separately durable via git.
+
+Smoke checklist after a deploy:
+
+1. `curl https://<service>/healthz` returns `{"status":"ok"}`.
+2. `init-runtime` logged `runtime initialized` (dirs, repo checkout, migrations).
+3. `opinion-run` either creates a run (Telegram messages arrive, one per proposal) or prints
+   `no highlights in the current window` / the active-run refusal.
+4. Approving a proposal pushes a commit to the opinions repo touching only `OPINIONS.md` and
+   `OPINIONS_SOURCES.jsonl`.
+5. After all proposals are decided, `state.json` `workflow.last_completed_window_end` advanced and the run folder
+   moved to `completed/`.
+
+If a push fails the run is marked failed with the git error in `failure_reason`; the local commit is preserved in
+`OPINIONS_REPO_DIR` — push or reset it manually. Failed runs are terminal and do not block new runs, so no
+`abandon-run` is needed (that command is for runs stuck pending approval). Known v1 residual risk: if the process
+crashes between a successful push and the database commit, tapping Approve again re-applies the proposal — for
+`add_opinion` that would append a duplicate opinion under a fresh ID; inspect the repo before re-approving after a
+crash.
 
 ## Testing
-
-Run the automated checks:
 
 ```bash
 uv run pytest
@@ -119,14 +129,14 @@ uv run ruff check .
 uv run pyright
 ```
 
-The normal e2e test uses a disposable local git remote and simulated Telegram updates. To run the real ThinHarness/OpenAI e2e path:
+The e2e test uses a disposable local git remote, the deterministic agent, and simulated Telegram updates. The
+optional real-model path:
 
 ```bash
 OPINIONS_RUN_REAL_E2E=1 uv run pytest tests/test_real_e2e_optional.py
 ```
 
-That test still uses fake Telegram and a disposable git remote; it only makes the agent proposal call through the configured model.
-
 ## Artifacts
 
-Run bundles are written under `.runs/<summary_run_id>/` as JSONL and Markdown. They may contain Readwise highlight content, so `.runs/` is gitignored. Local traces are also gitignored under `.traces/`; disable plaintext local traces in deployed environments with `THINHARNESS_DISABLE_LOCAL_TRACING=1`.
+`.readwise/`, `.runs/`, and `.traces/` are gitignored (they can contain Readwise content). Disable plaintext
+local traces in deployed environments with `THINHARNESS_DISABLE_LOCAL_TRACING=1`.

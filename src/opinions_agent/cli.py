@@ -7,13 +7,22 @@ from typing import Any
 
 import uvicorn
 
-from opinions_agent.agent import DeterministicSummaryAgent, ThinHarnessSummaryAgent
+from opinions_agent.agent import DeterministicOpinionAgent, ThinHarnessOpinionAgent
 from opinions_agent.config import get_settings
+from opinions_agent.corpus import CorpusPaths, init_data_dirs
 from opinions_agent.db import init_db, make_engine, make_sessionmaker
-from opinions_agent.readwise import ReadwiseClient, sync_readwise
+from opinions_agent.models import OpinionRun
+from opinions_agent.reader import ReaderClient, parse_iso, sync_reader
 from opinions_agent.repo_checkout import ensure_opinions_repo
+from opinions_agent.selection import RunPaths, cleanup_completed_runs
 from opinions_agent.telegram import FakeTelegramClient, TelegramClient
-from opinions_agent.workflow import handle_telegram_update, next_update_offset, summarize_recent
+from opinions_agent.workflow import (
+    ActiveRunError,
+    abandon_run,
+    handle_telegram_update,
+    next_update_offset,
+    start_opinion_run,
+)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -21,12 +30,15 @@ def main(argv: list[str] | None = None) -> None:
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("serve")
     subparsers.add_parser("init-db")
-    subparsers.add_parser("readwise-sync")
-    daily = subparsers.add_parser("daily-run")
-    daily.add_argument("--limit", type=int, default=10)
-    summarize = subparsers.add_parser("summarize-recent")
-    summarize.add_argument("--limit", type=int, default=10)
-    summarize.add_argument("--deterministic-agent", action="store_true")
+    subparsers.add_parser("init-runtime")
+    subparsers.add_parser("sync")
+    run_parser = subparsers.add_parser("opinion-run")
+    run_parser.add_argument("--deterministic-agent", action="store_true")
+    run_parser.add_argument("--window-start", help="ISO timestamp lower bound override")
+    run_parser.add_argument("--window-end", help="ISO timestamp upper bound override")
+    run_parser.add_argument("--skip-sync", action="store_true")
+    abandon = subparsers.add_parser("abandon-run")
+    abandon.add_argument("run_id")
     poll = subparsers.add_parser("telegram-poll")
     poll.add_argument("--once", action="store_true")
     process = subparsers.add_parser("process-pending-telegram")
@@ -45,45 +57,59 @@ async def _run(args: argparse.Namespace) -> None:
     settings = get_settings()
     engine = make_engine(settings.database_url)
     SessionLocal = make_sessionmaker(engine)
+    corpus = CorpusPaths(settings.opinions_data_dir)
 
     if args.command == "init-db":
         init_db(engine)
         return
+    if args.command == "init-runtime":
+        init_data_dirs(corpus)
+        RunPaths(settings.runs_dir).active_dir.mkdir(parents=True, exist_ok=True)
+        ensure_opinions_repo(settings)
+        _migrate()
+        print("runtime initialized")
+        return
+    if args.command == "sync":
+        result = await sync_reader(ReaderClient(settings.readwise_token), corpus)
+        print(
+            f"fetched {result.fetched_rows} rows: "
+            f"{result.new_documents} new documents, {result.new_highlights} new highlights"
+        )
+        return
 
     with SessionLocal() as session:
-        if args.command == "readwise-sync":
-            inserted = await sync_readwise(session, ReadwiseClient(settings.readwise_token))
-            print(f"synced {inserted} new highlights")
-            return
-        if args.command == "summarize-recent":
+        if args.command == "opinion-run":
             ensure_opinions_repo(settings)
-            agent = DeterministicSummaryAgent() if args.deterministic_agent else ThinHarnessSummaryAgent()
+            if not args.skip_sync:
+                await sync_reader(ReaderClient(settings.readwise_token), corpus)
+            cleanup_completed_runs(RunPaths(settings.runs_dir), retention_days=settings.completed_run_retention_days)
+            agent = DeterministicOpinionAgent() if args.deterministic_agent else ThinHarnessOpinionAgent()
             telegram = (
                 FakeTelegramClient() if settings.use_fake_telegram else TelegramClient(settings.telegram_bot_token)
             )
-            run = await summarize_recent(
-                session=session,
-                settings=settings,
-                agent=agent,
-                telegram=telegram,
-                limit=args.limit,
-            )
-            print(f"created run {run.id}" if run else "no highlights to summarize")
+            try:
+                run = await start_opinion_run(
+                    session=session,
+                    settings=settings,
+                    agent=agent,
+                    telegram=telegram,
+                    window_start=parse_iso(args.window_start),
+                    window_end=parse_iso(args.window_end),
+                )
+            except ActiveRunError as exc:
+                print(str(exc))
+                return
+            if run is None:
+                print("no highlights in the current window")
+            else:
+                print(f"created run {run.id} ({run.status})")
             return
-        if args.command == "daily-run":
-            ensure_opinions_repo(settings)
-            await sync_readwise(session, ReadwiseClient(settings.readwise_token))
-            telegram = (
-                FakeTelegramClient() if settings.use_fake_telegram else TelegramClient(settings.telegram_bot_token)
-            )
-            run = await summarize_recent(
-                session=session,
-                settings=settings,
-                agent=ThinHarnessSummaryAgent(),
-                telegram=telegram,
-                limit=args.limit,
-            )
-            print(f"created run {run.id}" if run else "no highlights to summarize")
+        if args.command == "abandon-run":
+            run = session.get(OpinionRun, args.run_id)
+            if run is None:
+                raise SystemExit(f"run not found: {args.run_id}")
+            abandon_run(session, settings, run)
+            print(f"abandoned run {run.id}")
             return
         if args.command == "telegram-poll":
             await _poll(settings, SessionLocal, once=args.once)
@@ -95,7 +121,7 @@ async def _run(args: argparse.Namespace) -> None:
             result = await handle_telegram_update(
                 session=session,
                 settings=settings,
-                agent=ThinHarnessSummaryAgent(),
+                agent=ThinHarnessOpinionAgent(),
                 telegram=TelegramClient(settings.telegram_bot_token),
                 update=update,
             )
@@ -107,9 +133,17 @@ async def _run(args: argparse.Namespace) -> None:
     raise ValueError(args.command)
 
 
+def _migrate() -> None:
+    from alembic.config import Config
+
+    from alembic import command
+
+    command.upgrade(Config("alembic.ini"), "head")
+
+
 async def _poll(settings, SessionLocal, *, once: bool) -> None:
     telegram = TelegramClient(settings.telegram_bot_token)
-    agent = ThinHarnessSummaryAgent()
+    agent = ThinHarnessOpinionAgent()
     while True:
         with SessionLocal() as session:
             offset = next_update_offset(session)

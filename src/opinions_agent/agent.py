@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field
 
 from opinions_agent.config import Settings
+from opinions_agent.corpus import CorpusPaths
 from opinions_agent.tracing import make_langfuse_tracing
+
+ProposalKind = Literal["add_opinion", "update_opinion", "remove_opinion", "add_sources"]
 
 
 class TelegramButton(BaseModel):
@@ -22,51 +26,123 @@ class TelegramMessageSpec(BaseModel):
     force_reply: bool = False
 
 
-class AgentOutput(BaseModel):
-    status: Literal["awaiting_user", "committed", "rejected", "needs_more_work"]
-    telegram_messages: list[TelegramMessageSpec] = Field(default_factory=list)
-    revised_summary: str | None = None
-    commit_sha: str | None = None
+class OpinionChangeProposal(BaseModel):
+    proposal_id: str
+    kind: ProposalKind
+    opinion_id: str | None = None
+    title: str | None = None
+    current_text: str | None = None
+    proposed_text: str | None = None
+    rationale: str
+    supporting_highlight_ids: list[str] = Field(default_factory=list)
 
 
-class SummaryAgent:
+class OpinionProposalOutput(BaseModel):
+    status: Literal["awaiting_user", "needs_more_work"]
+    proposals: list[OpinionChangeProposal] = Field(default_factory=list)
+    notes: str | None = None
+
+
+class ProposalValidationError(ValueError):
+    pass
+
+
+def validate_proposals(proposals: list[OpinionChangeProposal]) -> None:
+    seen: set[str] = set()
+    for proposal in proposals:
+        if not proposal.proposal_id.strip():
+            raise ProposalValidationError("proposal is missing a proposal_id")
+        if proposal.proposal_id in seen:
+            raise ProposalValidationError(f"duplicate proposal_id: {proposal.proposal_id}")
+        seen.add(proposal.proposal_id)
+        if proposal.kind == "add_opinion":
+            if not proposal.title or not proposal.proposed_text:
+                raise ProposalValidationError(f"{proposal.proposal_id}: add_opinion requires title and proposed_text")
+        else:
+            if not proposal.opinion_id:
+                raise ProposalValidationError(f"{proposal.proposal_id}: {proposal.kind} requires opinion_id")
+        if proposal.kind == "update_opinion" and not proposal.proposed_text:
+            raise ProposalValidationError(f"{proposal.proposal_id}: update_opinion requires proposed_text")
+        if proposal.kind in {"add_opinion", "update_opinion", "add_sources"} and not proposal.supporting_highlight_ids:
+            raise ProposalValidationError(f"{proposal.proposal_id}: {proposal.kind} requires supporting highlights")
+
+
+@dataclass(frozen=True)
+class AgentReadContext:
+    """The full read surface granted to the agent: current run bundle, corpus indexes,
+    document content, memory, decision log, and the public opinions files. Raw payloads,
+    state.json, old run directories, and git internals are intentionally excluded."""
+
+    run_dir: Path
+    documents_jsonl: Path
+    highlights_jsonl: Path
+    decisions_jsonl: Path
+    documents_dir: Path
+    memory_dir: Path
+    opinions_md: Path
+    sources_jsonl: Path
+
+    def read_paths(self) -> list[Path]:
+        return [
+            self.run_dir,
+            self.documents_jsonl,
+            self.highlights_jsonl,
+            self.decisions_jsonl,
+            self.documents_dir,
+            self.memory_dir,
+            self.opinions_md,
+            self.sources_jsonl,
+        ]
+
+
+def build_read_context(settings: Settings, run_dir: Path) -> AgentReadContext:
+    corpus = CorpusPaths(settings.opinions_data_dir)
+    return AgentReadContext(
+        run_dir=run_dir,
+        documents_jsonl=corpus.documents_jsonl,
+        highlights_jsonl=corpus.highlights_jsonl,
+        decisions_jsonl=corpus.decisions_jsonl,
+        documents_dir=corpus.documents_dir,
+        memory_dir=corpus.memory_dir,
+        opinions_md=settings.opinions_target_path,
+        sources_jsonl=settings.opinions_sources_path,
+    )
+
+
+class OpinionAgent:
     async def propose(
         self,
         *,
         run_id: str,
-        input_paths: dict[str, str],
-        target_file: Path,
+        context: AgentReadContext,
         settings: Settings,
-    ) -> tuple[AgentOutput, dict | None]:
+    ) -> tuple[OpinionProposalOutput, dict | None]:
         raise NotImplementedError
 
     async def revise(
         self,
         *,
         run_id: str,
-        current_summary: str,
         feedback: str,
-        input_paths: dict[str, str],
-        target_file: Path,
+        previous_output: OpinionProposalOutput,
+        context: AgentReadContext,
         settings: Settings,
         resume_state: dict | None,
-    ) -> tuple[AgentOutput, dict | None]:
+    ) -> tuple[OpinionProposalOutput, dict | None]:
         raise NotImplementedError
 
 
-class ThinHarnessSummaryAgent(SummaryAgent):
+class ThinHarnessOpinionAgent(OpinionAgent):
     async def propose(
         self,
         *,
         run_id: str,
-        input_paths: dict[str, str],
-        target_file: Path,
+        context: AgentReadContext,
         settings: Settings,
-    ) -> tuple[AgentOutput, dict | None]:
+    ) -> tuple[OpinionProposalOutput, dict | None]:
         return await _run_harness(
-            prompt=_proposal_prompt(run_id, input_paths, target_file),
-            run_dir=Path(input_paths["dir"]),
-            read_paths=[Path(input_paths["dir"]), target_file],
+            prompt=_proposal_prompt(run_id, context),
+            context=context,
             settings=settings,
             resume_state=None,
         )
@@ -75,100 +151,73 @@ class ThinHarnessSummaryAgent(SummaryAgent):
         self,
         *,
         run_id: str,
-        current_summary: str,
         feedback: str,
-        input_paths: dict[str, str],
-        target_file: Path,
+        previous_output: OpinionProposalOutput,
+        context: AgentReadContext,
         settings: Settings,
         resume_state: dict | None,
-    ) -> tuple[AgentOutput, dict | None]:
+    ) -> tuple[OpinionProposalOutput, dict | None]:
         prompt = (
-            _proposal_prompt(run_id, input_paths, target_file)
-            + "\n\nPrevious summary:\n"
-            + current_summary
+            _proposal_prompt(run_id, context)
+            + "\n\nPrevious proposals:\n"
+            + previous_output.model_dump_json(indent=2)
             + "\n\nUser feedback:\n"
             + feedback
-            + "\n\nRevise the summary unless the feedback is ambiguous. Do not approve it."
+            + "\n\nReturn a full replacement proposal batch that addresses the feedback."
         )
-        return await _run_harness(
-            prompt=prompt,
-            run_dir=Path(input_paths["dir"]),
-            read_paths=[Path(input_paths["dir"]), target_file],
-            settings=settings,
-            resume_state=resume_state,
-        )
+        return await _run_harness(prompt=prompt, context=context, settings=settings, resume_state=resume_state)
 
 
-class DeterministicSummaryAgent(SummaryAgent):
-    async def propose(
-        self,
-        *,
-        run_id: str,
-        input_paths: dict[str, str],
-        target_file: Path,
-        settings: Settings,
-    ) -> tuple[AgentOutput, dict | None]:
-        summary = _deterministic_summary(Path(input_paths["highlights_jsonl"]))
-        return _approval_output(run_id, summary), {"model": "deterministic"}
+def _proposal_prompt(run_id: str, context: AgentReadContext) -> str:
+    return f"""
+You are the opinion proposal agent for opinions-agent, run {run_id}.
 
-    async def revise(
-        self,
-        *,
-        run_id: str,
-        current_summary: str,
-        feedback: str,
-        input_paths: dict[str, str],
-        target_file: Path,
-        settings: Settings,
-        resume_state: dict | None,
-    ) -> tuple[AgentOutput, dict | None]:
-        summary = f"{current_summary}\n\nRevision note: {feedback.strip()}"
-        return _approval_output(run_id, summary), resume_state or {"model": "deterministic"}
+Start by reading the run brief at {context.run_dir / "brief.md"} and follow its instructions exactly.
 
+Inputs for this run:
+- Selected highlights (read all of them): {context.run_dir / "selected-highlights.jsonl"}
+- Selected documents: {context.run_dir / "selected-documents.jsonl"}
+- Current opinions: {context.opinions_md}
+- Opinion provenance: {context.sources_jsonl}
+- Prior proposal decisions: {context.decisions_jsonl}
+- Global corpus indexes for historical context: {context.documents_jsonl} and {context.highlights_jsonl}
+- Full document content, only when summaries/highlights are insufficient: {context.documents_dir}
+- Memory notes: {context.memory_dir}
 
-def _proposal_prompt(run_id: str, input_paths: dict[str, str], target_file: Path) -> str:
-    return (
-        f"""
-You are the dummy summary agent for opinions-agent.
-
-Read {input_paths["brief_md"]} and {input_paths["highlights_jsonl"]}. You may read the current target file at
-{target_file}, but do not write to any file.
-
-Return structured output only. Create a concise summary of the highlights, set status to "awaiting_user", put the
-summary in revised_summary, and include one Telegram message asking for approval.
-The Telegram message must include Approve, Reject, and Revise buttons with callback_data values:
-- run:{run_id}:approve
-- run:{run_id}:reject
-- run:{run_id}:revise
+Return structured output only. Do not write files. Use supporting_highlight_ids values exactly as they appear in
+selected-highlights.jsonl. Set status to "awaiting_user" when you have proposals (or an intentionally empty batch),
+and "needs_more_work" only when you could not complete the analysis.
 """
-    )
 
 
 async def _run_harness(
     *,
     prompt: str,
-    run_dir: Path,
-    read_paths: list[Path],
+    context: AgentReadContext,
     settings: Settings,
     resume_state: dict | None,
-) -> tuple[AgentOutput, dict | None]:
+) -> tuple[OpinionProposalOutput, dict | None]:
     from thinharness import Harness, HarnessConfig, PromptedOutput
 
-    root = _common_root([*read_paths, run_dir])
+    read_paths = context.read_paths()
     tracing = make_langfuse_tracing(settings)
     config = HarnessConfig(
-        root=root,
+        root=_common_root(read_paths),
         model=settings.harness_model,
         builtin_tools=["read"],
         read_paths=[str(path) for path in read_paths],
-        output_dir=str(run_dir / ".thinharness" / "outputs"),
-        output_type=PromptedOutput(AgentOutput),
+        output_dir=str(context.run_dir / ".thinharness" / "outputs"),
+        output_type=PromptedOutput(OpinionProposalOutput),
         local_trace_dir=str(settings.local_trace_dir),
         local_tracing=settings.local_tracing_enabled,
         tracing=[tracing] if tracing is not None else [],
     )
     result = await Harness(config).run(prompt, resume_from=resume_state)
-    output = result.output if isinstance(result.output, AgentOutput) else AgentOutput.model_validate(result.output)
+    output = (
+        result.output
+        if isinstance(result.output, OpinionProposalOutput)
+        else OpinionProposalOutput.model_validate(result.output)
+    )
     return output, result.resume_state
 
 
@@ -178,27 +227,85 @@ def _common_root(paths: list[Path]) -> Path:
     return Path(common)
 
 
-def _approval_output(run_id: str, summary: str) -> AgentOutput:
-    return AgentOutput(
-        status="awaiting_user",
-        revised_summary=summary,
-        telegram_messages=[
-            TelegramMessageSpec(
-                text=f"{summary}\n\nApprove this summary?",
-                buttons=[
-                    TelegramButton(text="Approve", callback_data=f"run:{run_id}:approve"),
-                    TelegramButton(text="Reject", callback_data=f"run:{run_id}:reject"),
-                    TelegramButton(text="Revise", callback_data=f"run:{run_id}:revise"),
-                ],
+class DeterministicOpinionAgent(OpinionAgent):
+    """Deterministic fake agent for tests and local smoke runs; emits all four proposal kinds."""
+
+    async def propose(
+        self,
+        *,
+        run_id: str,
+        context: AgentReadContext,
+        settings: Settings,
+    ) -> tuple[OpinionProposalOutput, dict | None]:
+        return _deterministic_output(context), {"model": "deterministic"}
+
+    async def revise(
+        self,
+        *,
+        run_id: str,
+        feedback: str,
+        previous_output: OpinionProposalOutput,
+        context: AgentReadContext,
+        settings: Settings,
+        resume_state: dict | None,
+    ) -> tuple[OpinionProposalOutput, dict | None]:
+        output = _deterministic_output(context, revision_note=feedback.strip())
+        return output, resume_state or {"model": "deterministic"}
+
+
+def _deterministic_output(context: AgentReadContext, revision_note: str | None = None) -> OpinionProposalOutput:
+    from opinions_agent.fsio import read_jsonl
+    from opinions_agent.opinions_doc import load_opinions
+
+    highlights = read_jsonl(context.run_dir / "selected-highlights.jsonl")
+    if not highlights:
+        return OpinionProposalOutput(status="awaiting_user", proposals=[])
+    existing = load_opinions(context.opinions_md).opinions
+    first = highlights[0]
+    last = highlights[-1]
+    suffix = f" (revised: {revision_note})" if revision_note else ""
+
+    proposals = [
+        OpinionChangeProposal(
+            proposal_id="prop_add",
+            kind="add_opinion",
+            title=f"Takeaway from {first.get('document_title') or 'recent reading'}",
+            proposed_text=f"{first['text']}{suffix}",
+            rationale="Deterministic add proposal from the first selected highlight.",
+            supporting_highlight_ids=[first["highlight_id"]],
+        )
+    ]
+    if existing:
+        proposals.append(
+            OpinionChangeProposal(
+                proposal_id="prop_update",
+                kind="update_opinion",
+                opinion_id=existing[0].opinion_id,
+                title=existing[0].title,
+                current_text=existing[0].body,
+                proposed_text=f"{existing[0].body}\n\nClarified by: {first['text']}{suffix}",
+                rationale="Deterministic update proposal for the first existing opinion.",
+                supporting_highlight_ids=[first["highlight_id"]],
             )
-        ],
-    )
-
-
-def _deterministic_summary(highlights_path: Path) -> str:
-    import json
-
-    rows = [json.loads(line) for line in highlights_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    titles = sorted({row.get("document_title") or "Untitled" for row in rows})
-    first_text = rows[0]["text"] if rows else "No highlights."
-    return f"Summary of {len(rows)} highlight(s) from {', '.join(titles)}: {first_text[:220]}"
+        )
+        proposals.append(
+            OpinionChangeProposal(
+                proposal_id="prop_sources",
+                kind="add_sources",
+                opinion_id=existing[0].opinion_id,
+                rationale="Deterministic add_sources proposal for the first existing opinion.",
+                supporting_highlight_ids=[last["highlight_id"]],
+            )
+        )
+    if len(existing) >= 2:
+        proposals.append(
+            OpinionChangeProposal(
+                proposal_id="prop_remove",
+                kind="remove_opinion",
+                opinion_id=existing[1].opinion_id,
+                current_text=existing[1].body,
+                rationale="Deterministic remove proposal for the second existing opinion.",
+                supporting_highlight_ids=[first["highlight_id"]],
+            )
+        )
+    return OpinionProposalOutput(status="awaiting_user", proposals=proposals)

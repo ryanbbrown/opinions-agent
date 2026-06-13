@@ -29,85 +29,68 @@ class RunStatus(StrEnum):
     PENDING_AGENT = "pending_agent"
     AWAITING_USER = "awaiting_user"
     REVISING = "revising"
-    APPROVED = "approved"
-    COMMITTING = "committing"
-    COMMITTED = "committed"
-    REJECTED = "rejected"
+    COMPLETED = "completed"
     FAILED = "failed"
+    ABANDONED = "abandoned"
 
 
-BLOCKING_SELECTION_STATUSES = {
+NON_TERMINAL_RUN_STATUSES = {
     RunStatus.PENDING_AGENT.value,
     RunStatus.AWAITING_USER.value,
     RunStatus.REVISING.value,
-    RunStatus.APPROVED.value,
-    RunStatus.COMMITTING.value,
-    RunStatus.COMMITTED.value,
-    RunStatus.REJECTED.value,
 }
 
 
-class ReadwiseSyncState(Base):
-    __tablename__ = "readwise_sync_state"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
-    updated_after: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    page_cursor: Mapped[str | None] = mapped_column(String(512), nullable=True)
-    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    raw: Mapped[dict] = mapped_column(JSON, default=dict)
+class ProposalStatus(StrEnum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    SUPERSEDED = "superseded"
 
 
-class ReadwiseHighlight(Base):
-    __tablename__ = "readwise_highlights"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    readwise_id: Mapped[str] = mapped_column(String(128), unique=True, index=True)
-    document_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    document_title: Mapped[str | None] = mapped_column(Text, nullable=True)
-    document_author: Mapped[str | None] = mapped_column(Text, nullable=True)
-    text: Mapped[str] = mapped_column(Text)
-    highlighted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    updated_at_external: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    raw: Mapped[dict] = mapped_column(JSON, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
-
-    runs: Mapped[list[SummaryRunHighlight]] = relationship(back_populates="highlight")
-
-
-class SummaryRun(Base):
-    __tablename__ = "summary_runs"
+class OpinionRun(Base):
+    __tablename__ = "opinion_runs"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     status: Mapped[str] = mapped_column(String(32), index=True, default=RunStatus.PENDING_AGENT.value)
-    summary_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    window_end: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    batch: Mapped[int] = mapped_column(Integer, default=1)
     input_paths: Mapped[dict] = mapped_column(JSON, default=dict)
     agent_output: Mapped[dict] = mapped_column(JSON, default=dict)
     resume_state: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
-    lock_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
-    commit_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
-    highlights: Mapped[list[SummaryRunHighlight]] = relationship(back_populates="run", cascade="all, delete-orphan")
+    proposals: Mapped[list[OpinionProposal]] = relationship(back_populates="run", cascade="all, delete-orphan")
 
 
-class SummaryRunHighlight(Base):
-    __tablename__ = "summary_run_highlights"
-    __table_args__ = (UniqueConstraint("summary_run_id", "readwise_highlight_id"),)
+class OpinionProposal(Base):
+    __tablename__ = "opinion_proposals"
+    __table_args__ = (UniqueConstraint("opinion_run_id", "batch", "proposal_id"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    summary_run_id: Mapped[str] = mapped_column(ForeignKey("summary_runs.id", ondelete="CASCADE"), index=True)
-    readwise_highlight_id: Mapped[int] = mapped_column(
-        ForeignKey("readwise_highlights.id", ondelete="CASCADE"),
-        index=True,
-    )
+    opinion_run_id: Mapped[str] = mapped_column(ForeignKey("opinion_runs.id", ondelete="CASCADE"), index=True)
+    batch: Mapped[int] = mapped_column(Integer, default=1)
+    proposal_id: Mapped[str] = mapped_column(String(64))
+    kind: Mapped[str] = mapped_column(String(32))
+    opinion_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    current_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    proposed_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    rationale: Mapped[str] = mapped_column(Text, default="")
+    supporting_highlight_ids: Mapped[list] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(32), index=True, default=ProposalStatus.PENDING.value)
+    applied_opinion_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    commit_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
-    run: Mapped[SummaryRun] = relationship(back_populates="highlights")
-    highlight: Mapped[ReadwiseHighlight] = relationship(back_populates="runs")
+    run: Mapped[OpinionRun] = relationship(back_populates="proposals")
 
 
 class TelegramInteraction(Base):
@@ -116,7 +99,8 @@ class TelegramInteraction(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     direction: Mapped[str] = mapped_column(String(16))
     idempotency_key: Mapped[str | None] = mapped_column(String(160), unique=True, nullable=True)
-    summary_run_id: Mapped[str | None] = mapped_column(ForeignKey("summary_runs.id"), nullable=True, index=True)
+    opinion_run_id: Mapped[str | None] = mapped_column(ForeignKey("opinion_runs.id"), nullable=True, index=True)
+    opinion_proposal_id: Mapped[int | None] = mapped_column(ForeignKey("opinion_proposals.id"), nullable=True)
     chat_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
     message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     update_id: Mapped[int | None] = mapped_column(BigInteger, unique=True, nullable=True)

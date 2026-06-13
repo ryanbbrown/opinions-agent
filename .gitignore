@@ -10,7 +10,8 @@ build/
 coverage/
 .runs/
 .traces/
-.reviews/
+.readwise/
 
 __pycache__/
 .venv/
+.reviews/**/.logs/
