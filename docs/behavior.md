@@ -14,10 +14,8 @@ git commits. The agent receives read-only context and returns structured proposa
 
 - RUNTIME-1: The agent must not write opinion files, corpus files, run bundles, database rows, or git commits directly.
 - RUNTIME-2: The app must validate agent proposal output before storing proposals or mutating opinion files.
-- RUNTIME-3: The app must be runnable locally with the same workflow as deployment, with environment variables selecting
-  local versus deployed services.
-- RUNTIME-4: Local dry runs may use fake Telegram delivery, but the run/proposal/approval code path should remain the
-  same as production except for the Telegram client.
+- RUNTIME-3: Local runs and deployed runs use the same workflow; environment variables select local paths, fake
+  Telegram, real Telegram, and repository targets.
 
 ## Durable Corpus
 
@@ -34,19 +32,17 @@ The filesystem corpus is the durable, readable store of Reader-derived evidence 
 - CORPUS-4: Reader highlight rows use stable IDs with the `rw:<reader_id>` form.
 - CORPUS-5: Reader document-level notes with non-empty `notes` text are represented as evidence rows in
   `highlights.jsonl` with stable IDs using the `reader-note:<reader_id>` form.
-- CORPUS-6: Highlight-attached Reader note rows are stored on their parent highlight row as note text rather than as
-  separate evidence rows.
+- CORPUS-6: Highlight-attached Reader note rows are stored on their parent highlight row as note text.
 - CORPUS-7: `raw/reader_<id>.json` stores untouched Reader API payloads for debugging and recovery, but raw payloads are
   not part of the default agent read surface.
 - CORPUS-8: `documents/reader_<id>.md` stores readable full document content for agent inspection when summaries and
   selected evidence are insufficient.
-- CORPUS-9: `memory/` contains durable memory files intended for distilled guidance; no automated memory-writing
-  behavior is currently implemented.
+- CORPUS-9: `memory/` contains placeholder memory files; no automated memory-writing behavior is implemented.
 - CORPUS-10: Sync state advances only after all corpus writes for the sync succeed.
 
 ### Scenarios
 
-- CORPUS-S1: If a sync fails before corpus writes complete, `state.json` must not advance to the failed batch's
+- CORPUS-S1: If sync fails before corpus writes complete, `state.json` must not advance to the failed batch's
   watermark.
 - CORPUS-S2: Re-running sync with already-seen documents or evidence must upsert rows by stable ID instead of
   duplicating them.
@@ -125,23 +121,21 @@ runtime state.
 ### Requirements
 
 - OPINIONS-1: `OPINIONS.md` stores the current accepted opinions.
-- OPINIONS-2: Each opinion has a stable `opinion-000001` style ID.
-- OPINIONS-3: Opinion IDs are durable once the opinions repository is in active use; moving or reordering opinions must
-  not change IDs.
+- OPINIONS-2: Each opinion has a stable `opinion-000001` style ID stored as a hidden HTML comment.
+- OPINIONS-3: The currently implemented `OPINIONS.md` parser expects each opinion as a hidden ID comment followed by a
+  numbered `## N. Title` heading and body text.
 - OPINIONS-4: `OPINIONS_SOURCES.jsonl` stores one row per supporting evidence item for each accepted opinion.
 - OPINIONS-5: Multiple rows in `OPINIONS_SOURCES.jsonl` may reference the same opinion ID when multiple highlights or
   document notes support that opinion.
 - OPINIONS-6: Source rows include the opinion ID, evidence ID, document ID, document title, source URL, evidence text,
   and timestamp when the source was attached.
-- OPINIONS-7: `OPINIONS_SOURCES.jsonl` is the machine-readable provenance source. Inline comments in `OPINIONS.md` may
-  be useful for humans but are not sufficient as the durable automation format.
-- OPINIONS-8: Applying `add_opinion` assigns the next stable opinion ID based on existing opinion IDs, source rows, and
+- OPINIONS-7: Applying `add_opinion` assigns the next stable opinion ID based on existing opinion IDs, source rows, and
   accepted decision history so removed IDs are not reused.
-- OPINIONS-9: Applying `update_opinion` changes the target opinion text and merges new source rows.
-- OPINIONS-10: Applying `remove_opinion` removes the target opinion and removes its source rows.
-- OPINIONS-11: Applying `add_sources` keeps opinion text unchanged and merges new source rows.
-- OPINIONS-12: Source rows are deduplicated by `(opinion_id, evidence_id)`.
-- OPINIONS-13: Post-apply validation rejects duplicate opinion IDs and source rows that reference missing opinions.
+- OPINIONS-8: Applying `update_opinion` changes the target opinion text and merges new source rows.
+- OPINIONS-9: Applying `remove_opinion` removes the target opinion and removes its source rows.
+- OPINIONS-10: Applying `add_sources` keeps opinion text unchanged and merges new source rows.
+- OPINIONS-11: Source rows are deduplicated by `(opinion_id, evidence_id)`.
+- OPINIONS-12: Post-apply validation rejects duplicate opinion IDs and source rows that reference missing opinions.
 
 ## Git Application
 
@@ -160,39 +154,15 @@ Approved changes become durable by committing and pushing only the configured op
 - GIT-6: A no-op apply produces no commit SHA.
 - GIT-7: Push failures mark the run failed and preserve the local commit for manual recovery.
 
-## Decision History And Memory
+## Decision History
 
 ### Purpose
 
-The system keeps an audit trail of proposal decisions while leaving long-term distilled learning to memory files.
+The system keeps an audit trail of proposal decisions.
 
 ### Requirements
 
 - DECISION-1: Accepted and rejected proposal decisions append rows to `opinion-decisions.jsonl`.
 - DECISION-2: Decision rows include run ID, proposal ID, decision, proposal kind, opinion ID when applicable,
   supporting evidence IDs, and decision timestamp.
-- DECISION-3: The decision log is an audit/history artifact and may be inspected by an agent when relevant.
-- DECISION-4: The agent should not rely on reading the entire decision log every run as its primary long-term memory.
-- DECISION-5: Distilled long-term guidance belongs in memory files, but automated memory updates are not currently
-  implemented.
-
-## Opinion Selection Rules
-
-### Purpose
-
-Opinion proposals should be plausible Ryan-endorsable stances rather than summaries, raw highlights, or generic
-workflow practices.
-
-### Requirements
-
-- RULES-1: The agent cannot know endorsement directly; approval, rejection, and revision determine actual endorsement.
-- RULES-2: Proposed opinions should be stances, judgments, predictions, prioritizations, tradeoffs, or decision rules.
-- RULES-3: Proposed opinions should avoid obvious practices and consensus filler.
-- RULES-4: Coding-agent tactics usually belong outside `OPINIONS.md` unless they generalize into a broader stance about
-  software, human judgment, agents, verification, organizations, or system design.
-- RULES-5: Document notes should carry more evidentiary weight than ordinary highlights.
-- RULES-6: Market, strategy, taste, craft, career, and work-life claims can count when they guide future judgment.
-- RULES-7: Opinions should be understandable in isolation; if a claim depends on a specific example, mechanism, or term
-  of art, the opinion text should include enough context to remain clear later.
-- RULES-8: Related opinions should be grouped into sections instead of being over-consolidated into vague thesis
-  statements.
+- DECISION-3: The decision log is available in the agent read context.
