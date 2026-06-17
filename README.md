@@ -1,12 +1,12 @@
 # opinions-agent
 
-`opinions-agent` syncs Readwise Reader documents, summaries, full content, and highlights into a durable
-filesystem corpus, deterministically selects the current window of highlights for each run, asks an agent to
-propose opinion changes, and applies each proposal to `OPINIONS.md` / `OPINIONS_SOURCES.jsonl` only after
-per-proposal Telegram approval.
+`opinions-agent` syncs Readwise Reader documents, summaries, full content, highlights, and notes into a durable
+filesystem corpus, deterministically selects the current window of evidence for each run, asks an agent to propose
+conceptual opinion changes, and resumes that same bounded agent conversation to update `OPINIONS.md`,
+`OPINIONS_SOURCES.jsonl`, and `opinion-decisions.jsonl` only after Telegram approval.
 
-The app owns sync state, selection, approval, file mutations, and git commits. The agent only reads a restricted
-set of paths and returns structured proposals.
+The app owns sync state, selection, approval state, validation, and git commits. The agent proposes concepts first,
+then performs approved artifact edits inside a write boundary limited to the three opinion artifacts.
 
 ## Storage shape
 
@@ -16,7 +16,7 @@ Durable corpus (`OPINIONS_DATA_DIR`, default `.readwise`):
 state.json                 # app-owned sync + workflow cursor state
 documents.jsonl            # one normalized row per Reader document
 highlights.jsonl           # one normalized row per highlight (primary query surface)
-opinion-decisions.jsonl    # accepted/rejected proposal history
+opinion-decisions.jsonl    # agent-authored compact decision summaries
 documents/reader_<id>.md   # readable full document content
 raw/reader_<id>.json       # untouched API payloads (not agent context)
 memory/                    # placeholder memory files (no agent writes in v1)
@@ -39,15 +39,32 @@ failure details.
 2. `opinion-run` refuses to start while any run is non-terminal, selects highlights between the workflow cursor
    and now, writes the run bundle, and asks the agent for proposals.
 3. The app sends one Telegram message per proposal with Approve / Reject / Revise buttons.
-4. Approve applies that proposal to `OPINIONS.md` + `OPINIONS_SOURCES.jsonl`, validates stable IDs and
-   provenance, appends to `opinion-decisions.jsonl`, and commits/pushes only those two files. Reject records the
-   decision without mutating files. Revision feedback must be sent as a Telegram *reply* to one of the run's
-   proposal messages; it revises the whole batch (pending proposals are superseded, already-approved ones stay
-   applied). Free text that is not a reply is ignored.
-5. When every proposal is terminal, the run completes and the workflow cursor in `state.json` advances.
+4. Approve / Reject callbacks record user decisions but do not immediately edit files while other active-batch
+   proposals remain pending. When every current-batch proposal is addressed, or the allowed user sends exact
+   uppercase `GO`, the app resumes the same agent conversation for the addressed subset. Exact uppercase `SKIP`
+   defers unresolved current-batch proposals and lets the same agent record decision summaries for them.
+5. The agent writes the opinion artifacts directly, calls the same validator the app uses, and returns a
+   structured summary. The app validates once more, verifies only configured opinion files are dirty in the opinions
+   repo, then commits/pushes `OPINIONS.md` and `OPINIONS_SOURCES.jsonl` only. `opinion-decisions.jsonl` lives in
+   `OPINIONS_DATA_DIR` and is not committed to the opinions repo.
+6. Revision feedback must be sent as a Telegram *reply* to one of the run's proposal messages; it revises the whole
+   pending batch (pending proposals are superseded, already-approved decisions stay accepted). Free text that is not a
+   reply is ignored unless it is exact `GO` or exact `SKIP`.
+7. When every actionable proposal is processed, the run completes and the workflow cursor in `state.json` advances.
 
-Each opinion in `OPINIONS.md` carries a hidden stable ID (`<!-- opinion-id: opinion-000013 -->`); visible numbers
-can be reordered later, the hidden ID is durable.
+`OPINIONS.md` uses section headings with one-line bullet opinions and indented metadata comments:
+
+```markdown
+## Section
+
+- Opinion sentence.
+  <!-- opinion-id: opinion-000013 -->
+  <!-- sources: rw:source-id, reader-note:document-id -->
+```
+
+Opinion IDs are agent-written and app-validated. IDs are stable, unique, and never reused after retirement. Source rows
+in `OPINIONS_SOURCES.jsonl` are invalid if they duplicate an `(opinion_id, highlight_id)` pair or reference a missing
+opinion.
 
 ## Local Setup
 
@@ -109,17 +126,15 @@ Smoke checklist after a deploy:
 2. `init-runtime` logged `runtime initialized` (dirs, repo checkout, migrations).
 3. `opinion-run` either creates a run (Telegram messages arrive, one per proposal) or prints
    `no highlights in the current window` / the active-run refusal.
-4. Approving a proposal pushes a commit to the opinions repo touching only `OPINIONS.md` and
+4. Addressing all proposals, or sending exact `GO` / `SKIP`, resumes the agent for approved edits or decision
+   summaries. Successful approved changes push a commit to the opinions repo touching only `OPINIONS.md` and
    `OPINIONS_SOURCES.jsonl`.
-5. After all proposals are decided, `state.json` `workflow.last_completed_window_end` advanced and the run folder
+5. After all actionable proposals are processed, `state.json` `workflow.last_completed_window_end` advanced and the run folder
    moved to `completed/`.
 
-If a push fails the run is marked failed with the git error in `failure_reason`; the local commit is preserved in
-`OPINIONS_REPO_DIR` — push or reset it manually. Failed runs are terminal and do not block new runs, so no
-`abandon-run` is needed (that command is for runs stuck pending approval). Known v1 residual risk: if the process
-crashes between a successful push and the database commit, tapping Approve again re-applies the proposal — for
-`add_opinion` that would append a duplicate opinion under a fresh ID; inspect the repo before re-approving after a
-crash.
+If validation, commit, or push fails the run is marked failed with recovery context in `failure_reason`. Inspect the
+opinions repo, `OPINIONS_DATA_DIR/opinion-decisions.jsonl`, and the active run snapshot before retrying. Failed runs
+are terminal and do not block new runs, so no `abandon-run` is needed (that command is for runs stuck pending approval).
 
 ## Testing
 
@@ -138,5 +153,6 @@ OPINIONS_RUN_REAL_E2E=1 uv run pytest tests/test_real_e2e_optional.py
 
 ## Artifacts
 
-`.readwise/`, `.runs/`, and `.traces/` are gitignored (they can contain Readwise content). Disable plaintext
-local traces in deployed environments with `THINHARNESS_DISABLE_LOCAL_TRACING=1`.
+`.readwise/` and `.runs/` are gitignored because they can contain Reader content and run bundles. ThinHarness local
+traces use its default location under `~/.thinharness/traces/`; disable plaintext local traces in deployed environments
+with `THINHARNESS_DISABLE_LOCAL_TRACING=1`.

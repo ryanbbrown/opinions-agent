@@ -11,6 +11,8 @@ coverage/
 .runs/
 .traces/
 .readwise/
+.archive/
+.reviews/
 
 __pycache__/
 .venv/
