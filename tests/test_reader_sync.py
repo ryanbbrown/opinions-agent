@@ -5,6 +5,7 @@ import pytest
 from opinions_agent.corpus import CorpusPaths, init_data_dirs, load_state, read_documents, read_highlights
 from opinions_agent.html_to_markdown import html_to_markdown
 from opinions_agent.reader import sync_reader
+from opinions_agent.selection import select_run_highlights
 
 
 def doc_row(reader_id: str = "doc1", **overrides) -> dict:
@@ -149,6 +150,58 @@ async def test_late_note_attaches_to_existing_highlight(paths: CorpusPaths) -> N
     await sync_reader(FakeReaderClient([[note_row(text="Late note.")]]), paths)
 
     assert read_highlights(paths)[0].note == "Late note."
+
+
+async def test_document_level_note_becomes_evidence_row(paths: CorpusPaths) -> None:
+    await sync_reader(FakeReaderClient([[doc_row(), note_row(reader_id="note-doc", parent_id="doc1")]]), paths)
+
+    highlights = read_highlights(paths)
+
+    assert len(highlights) == 1
+    assert highlights[0].highlight_id == "reader-note:note-doc"
+    assert highlights[0].document_id == "reader:doc1"
+    assert highlights[0].text == "My note."
+
+
+async def test_empty_document_level_note_is_not_evidence(paths: CorpusPaths) -> None:
+    await sync_reader(
+        FakeReaderClient([[doc_row(), note_row(reader_id="note-empty", parent_id="doc1", text="")]]),
+        paths,
+    )
+
+    assert read_highlights(paths) == []
+
+
+async def test_backfill_documents_and_descendants_are_excluded(paths: CorpusPaths) -> None:
+    await sync_reader(
+        FakeReaderClient(
+            [
+                [
+                    doc_row(tags={"backfill": {}}),
+                    highlight_row("hl-backfill"),
+                    note_row(reader_id="note-backfill", parent_id="doc1"),
+                ]
+            ]
+        ),
+        paths,
+    )
+
+    highlights, documents = select_run_highlights(
+        paths,
+        parse_utc("2026-06-01T00:00:00+00:00"),
+        parse_utc("2026-06-12T00:00:00+00:00"),
+    )
+
+    assert documents == []
+    assert highlights == []
+
+
+def parse_utc(value: str):
+    from opinions_agent.reader import parse_iso
+
+    parsed = parse_iso(value)
+    assert parsed is not None
+    return parsed
 
 
 def test_html_to_markdown_handles_headings_lists_and_entities() -> None:

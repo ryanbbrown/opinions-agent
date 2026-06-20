@@ -41,6 +41,10 @@ def highlight_key(reader_id: str) -> str:
     return f"rw:{reader_id}"
 
 
+def reader_note_key(reader_id: str) -> str:
+    return f"reader-note:{reader_id}"
+
+
 def parse_iso(value: Any) -> datetime | None:
     if not value:
         return None
@@ -146,6 +150,27 @@ def _highlight_row(
     )
 
 
+def _document_note_row(row: dict[str, Any], parent: DocumentRow | None) -> HighlightRow:
+    reader_id = str(row["id"])
+    parent_reader_id = str(row.get("parent_id") or "")
+    highlighted_at = parse_iso(row.get("created_at") or row.get("saved_at"))
+    return HighlightRow(
+        highlight_id=reader_note_key(reader_id),
+        document_id=parent.document_id if parent else document_key(parent_reader_id),
+        reader_id=reader_id,
+        document_title=parent.title if parent else None,
+        document_author=parent.author if parent else None,
+        document_summary=parent.summary if parent else None,
+        source_url=parent.source_url if parent else None,
+        text=row.get("content") or "",
+        highlighted_at=iso_utc(highlighted_at) if highlighted_at else None,
+        highlighted_date=highlighted_at.astimezone(UTC).date().isoformat() if highlighted_at else None,
+        highlighted_week=iso_week(highlighted_at) if highlighted_at else None,
+        updated_at=row.get("updated_at"),
+        content_path=parent.content_path if parent else None,
+    )
+
+
 @dataclass(frozen=True)
 class NormalizedExport:
     documents: list[DocumentRow]
@@ -159,22 +184,50 @@ def normalize_rows(rows: list[dict[str, Any]], paths: CorpusPaths) -> Normalized
     lookups fall back to documents.jsonl and existing highlight rows.
     """
     skip_categories = HIGHLIGHT_CATEGORIES | NOTE_CATEGORIES
-    document_rows = [_document_row(row, paths) for row in rows if _category(row) not in skip_categories]
+    skipped_document_reader_ids = {
+        str(row["id"])
+        for row in rows
+        if _category(row) not in skip_categories and any(tag in {"backfill", ".backfill"} for tag in _tags(row))
+    }
+    document_rows = [
+        _document_row(row, paths)
+        for row in rows
+        if _category(row) not in skip_categories and str(row["id"]) not in skipped_document_reader_ids
+    ]
     documents = {doc.document_id: doc for doc in document_rows}
     existing_documents = document_by_id(paths)
     existing_highlights = {row.highlight_id: row for row in read_highlights(paths)}
+    highlight_reader_ids = {str(row["id"]) for row in rows if _category(row) in HIGHLIGHT_CATEGORIES}
 
     notes_by_highlight: dict[str, str] = {}
+    document_note_rows: dict[str, HighlightRow] = {}
     for row in rows:
-        if _category(row) in NOTE_CATEGORIES and row.get("parent_id"):
-            notes_by_highlight[highlight_key(str(row["parent_id"]))] = row.get("content") or ""
+        if _category(row) not in NOTE_CATEGORIES or not row.get("parent_id"):
+            continue
+        if not (row.get("content") or "").strip():
+            continue
+        parent_reader_id = str(row["parent_id"])
+        if parent_reader_id in skipped_document_reader_ids:
+            continue
+        parent_highlight_id = highlight_key(parent_reader_id)
+        if parent_reader_id in highlight_reader_ids or parent_highlight_id in existing_highlights:
+            notes_by_highlight[parent_highlight_id] = row.get("content") or ""
+            continue
+        parent_key = document_key(parent_reader_id)
+        parent = documents.get(parent_key) or existing_documents.get(parent_key)
+        if parent is not None and "backfill" not in parent.tags and ".backfill" not in parent.tags:
+            document_note_rows[reader_note_key(str(row["id"]))] = _document_note_row(row, parent)
 
     highlight_rows: dict[str, HighlightRow] = {}
     for row in rows:
         if _category(row) not in HIGHLIGHT_CATEGORIES:
             continue
+        if str(row.get("parent_id") or "") in skipped_document_reader_ids:
+            continue
         parent_key = document_key(str(row.get("parent_id") or ""))
         parent = documents.get(parent_key) or existing_documents.get(parent_key)
+        if parent is not None and ("backfill" in parent.tags or ".backfill" in parent.tags):
+            continue
         note = notes_by_highlight.get(highlight_key(str(row["id"])))
         if note is None:
             previous = existing_highlights.get(highlight_key(str(row["id"])))
@@ -202,6 +255,7 @@ def normalize_rows(rows: list[dict[str, Any]], paths: CorpusPaths) -> Normalized
                 }
             )
 
+    highlight_rows.update(document_note_rows)
     return NormalizedExport(documents=document_rows, highlights=list(highlight_rows.values()))
 
 

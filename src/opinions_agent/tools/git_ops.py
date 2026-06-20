@@ -61,6 +61,10 @@ def commit_and_push_opinions_files(
         raise GitToolError("at least one target file is required")
     for target_file in target_files:
         assert_relative_target(repo_dir, target_file)
+    staged_before = run_git(repo_dir, "diff", "--cached", "--name-only")
+    unrelated_staged = [line for line in staged_before.splitlines() if line and line not in target_files]
+    if unrelated_staged:
+        raise GitToolError(f"refusing unrelated staged files: {unrelated_staged}")
     if push:
         run_git(repo_dir, "fetch", "origin", branch)
     unstaged_status = run_git(repo_dir, "status", "--porcelain", "--", *target_files)

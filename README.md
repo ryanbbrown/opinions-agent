@@ -25,32 +25,34 @@ memory/                    # placeholder memory files (no agent writes in v1)
 Run bundles (`RUNS_DIR`, default `.runs`) hold active-run/debug artifacts only:
 
 ```text
-active/<run_id>/brief.md, selected-highlights.jsonl, selected-documents.jsonl
+active/<run_id>/selected-highlights.jsonl, selected-documents.jsonl
+active/<run_id>/review/summary.md, initial-telegram.md
 completed/<run_id>/final.json   # retained OPINIONS_COMPLETED_RUN_RETENTION_DAYS days (default 30)
 ```
 
-The database keeps operational state only: runs, proposals, Telegram idempotency, ThinHarness resume state, and
-failure details.
+The database keeps operational state only: runs, Telegram message/update idempotency, ThinHarness resume state, and
+failure details. Proposal rows may exist as an audit cache, but they do not drive file mutations.
 
 ## Workflow
 
 1. `sync` pulls Reader v3 documents/highlights/notes into the corpus (`state.json` advances only after all
    corpus writes succeed).
 2. `opinion-run` refuses to start while any run is non-terminal, selects highlights between the workflow cursor
-   and now, writes the run bundle, and asks the agent for proposals.
-3. The app sends one Telegram message per proposal with Approve / Reject / Revise buttons.
-4. Approve / Reject callbacks record user decisions but do not immediately edit files while other active-batch
-   proposals remain pending. When every current-batch proposal is addressed, or the allowed user sends exact
-   uppercase `GO`, the app resumes the same agent conversation for the addressed subset. Exact uppercase `SKIP`
-   defers unresolved current-batch proposals and lets the same agent record decision summaries for them.
-5. The agent writes the opinion artifacts directly, calls the same validator the app uses, and returns a
-   structured summary. The app validates once more, verifies only configured opinion files are dirty in the opinions
-   repo, then commits/pushes `OPINIONS.md` and `OPINIONS_SOURCES.jsonl` only. `opinion-decisions.jsonl` lives in
+   and now, writes the run bundle, and starts one ThinHarness conversation.
+3. The agent returns native structured output: `status` plus one or more Telegram message specs. The app sends those
+   messages exactly, with deterministic `opinion-run:<run_id>:turn:<turn_seq>:message:<index>` idempotency keys, and
+   stores Telegram's real `(chat_id, message_id)` values.
+4. Telegram callbacks and replies are recorded against the stored outbound message by `(chat_id, message_id)`.
+   Callback data must match a button that was actually sent. A single response does not resume the agent until every
+   required message in the current turn has a response.
+5. Exact uppercase `GO` and `SKIP` from `TELEGRAM_ALLOWED_CHAT_ID` resume the same agent conversation immediately as
+   concrete user input. The app does not interpret these commands as proposal accept/reject decisions.
+6. The agent writes the opinion artifacts directly when the conversation has enough approval or revision context, calls
+   the same validator the app uses, and returns `done` or `blocked`.
+7. After `done`, the app validates once more, rejects unrelated staged files, stages only `OPINIONS.md` and
+   `OPINIONS_SOURCES.jsonl`, commits/pushes those files if changed, updates the opinion-ID high-water mark, advances
+   the workflow cursor, and only then sends final success-style Telegram messages. `opinion-decisions.jsonl` lives in
    `OPINIONS_DATA_DIR` and is not committed to the opinions repo.
-6. Revision feedback must be sent as a Telegram *reply* to one of the run's proposal messages; it revises the whole
-   pending batch (pending proposals are superseded, already-approved decisions stay accepted). Free text that is not a
-   reply is ignored unless it is exact `GO` or exact `SKIP`.
-7. When every actionable proposal is processed, the run completes and the workflow cursor in `state.json` advances.
 
 `OPINIONS.md` uses section headings with one-line bullet opinions and indented metadata comments:
 
@@ -63,8 +65,10 @@ failure details.
 ```
 
 Opinion IDs are agent-written and app-validated. IDs are stable, unique, and never reused after retirement. Source rows
-in `OPINIONS_SOURCES.jsonl` are invalid if they duplicate an `(opinion_id, highlight_id)` pair or reference a missing
-opinion.
+in `OPINIONS_SOURCES.jsonl` use `evidence_id` and are invalid if they duplicate an `(opinion_id, evidence_id)` pair,
+reference a missing opinion, use legacy `highlight_id`, omit required provenance fields, fail to match selected-run
+evidence metadata for newly added evidence, or add evidence outside the current run bundle. Every accepted opinion must
+have at least one machine-readable source row.
 
 ## Local Setup
 
@@ -90,7 +94,8 @@ at a disposable repo when experimenting.
 uv run opinions-agent serve            # FastAPI web service (Telegram webhook + /healthz)
 uv run opinions-agent init-runtime     # ensure data dirs, memory files, repo checkout, DB migrations
 uv run opinions-agent sync             # Reader -> filesystem corpus
-uv run opinions-agent opinion-run      # sync + select window + propose + request approval
+uv run opinions-agent opinion-run      # sync + select window + start/resume Telegram approval loop
+uv run opinions-agent sample-run W04   # local disposable run against copied artifacts under .runs/active/
 uv run opinions-agent abandon-run ID   # abandon a stuck pending run (cursor does not advance)
 uv run opinions-agent telegram-poll    # local alternative to the webhook
 uv run opinions-agent set-telegram-webhook https://your-service.up.railway.app/telegram/webhook
@@ -98,6 +103,16 @@ uv run opinions-agent set-telegram-webhook https://your-service.up.railway.app/t
 
 Useful `opinion-run` flags: `--deterministic-agent` (no model calls), `--skip-sync`,
 `--window-start/--window-end` (ISO timestamps, override the workflow cursor).
+
+`sample-run W04` maps `W04` to the fourth chronological seven-day window in the local corpus, starting from the Monday
+of the earliest dated highlight. It creates a readable run directory named `<timestamp>-W04` under `.runs/active/`,
+copies the configured corpus plus a chosen opinions file into that directory, initializes a disposable local git remote,
+and runs the normal agent workflow against those copied paths. The agent cannot read or write the original opinion repo
+files during a sample run. Use `--opinions-file PATH` to choose the seed file; it defaults to `OPINIONS.md` in the
+current working directory. If no sources file is supplied, sample setup derives `OPINIONS_SOURCES.jsonl` from inline
+`<!-- sources: ... -->` comments and the copied corpus evidence rows. By default, sample runs use fake Telegram and
+write review files only; pass `--send-telegram` to send the sample run's Telegram messages to the configured allowed
+chat.
 
 Deterministic local smoke run without Telegram sends:
 
@@ -124,13 +139,13 @@ Smoke checklist after a deploy:
 
 1. `curl https://<service>/healthz` returns `{"status":"ok"}`.
 2. `init-runtime` logged `runtime initialized` (dirs, repo checkout, migrations).
-3. `opinion-run` either creates a run (Telegram messages arrive, one per proposal) or prints
+3. `opinion-run` either creates a run (agent-authored Telegram messages arrive) or prints
    `no highlights in the current window` / the active-run refusal.
-4. Addressing all proposals, or sending exact `GO` / `SKIP`, resumes the agent for approved edits or decision
-   summaries. Successful approved changes push a commit to the opinions repo touching only `OPINIONS.md` and
+4. Answering all required current-turn messages, or sending exact `GO` / `SKIP`, resumes the same agent conversation.
+   Successful approved changes push a commit to the opinions repo touching only `OPINIONS.md` and
    `OPINIONS_SOURCES.jsonl`.
-5. After all actionable proposals are processed, `state.json` `workflow.last_completed_window_end` advanced and the run folder
-   moved to `completed/`.
+5. After the agent returns `done` and app validation/commit handling succeeds, `state.json`
+   `workflow.last_completed_window_end` advances and the run folder moves to `completed/`.
 
 If validation, commit, or push fails the run is marked failed with recovery context in `failure_reason`. Inspect the
 opinions repo, `OPINIONS_DATA_DIR/opinion-decisions.jsonl`, and the active run snapshot before retrying. Failed runs
@@ -144,8 +159,8 @@ uv run ruff check .
 uv run pyright
 ```
 
-The e2e test uses a disposable local git remote, the deterministic agent, and simulated Telegram updates. The
-optional real-model path:
+The e2e test uses a disposable local git remote, the deterministic agent, and simulated Telegram updates. The required
+developer completion gate for real ThinHarness/native-output behavior is isolated behind an explicit environment flag:
 
 ```bash
 OPINIONS_RUN_REAL_E2E=1 uv run pytest tests/test_real_e2e_optional.py

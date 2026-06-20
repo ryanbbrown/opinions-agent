@@ -40,6 +40,10 @@ class CorpusPaths:
         return self.data_dir / "opinion-decisions.jsonl"
 
     @property
+    def opinion_id_high_water(self) -> Path:
+        return self.data_dir / "opinion-id-high-water.json"
+
+    @property
     def documents_dir(self) -> Path:
         return self.data_dir / "documents"
 
@@ -108,19 +112,18 @@ class CorpusState(BaseModel):
 
 
 class OpinionDecision(BaseModel):
-    proposal_id: str
     run_id: str
-    decision: str
-    kind: str
-    opinion_id: str | None = None
-    proposed_title: str | None = None
-    supporting_highlight_ids: list[str] = Field(default_factory=list)
-    decided_at: str
+    outcome: str
+    summary: str
+    affected_opinion_ids: list[str] = Field(default_factory=list)
+    supporting_evidence_ids: list[str] = Field(default_factory=list)
 
 
 def init_data_dirs(paths: CorpusPaths) -> None:
     for directory in (paths.data_dir, paths.documents_dir, paths.raw_dir, paths.memory_dir):
         directory.mkdir(parents=True, exist_ok=True)
+    if not paths.decisions_jsonl.exists():
+        paths.decisions_jsonl.write_text("", encoding="utf-8")
     for name, placeholder in MEMORY_FILES.items():
         memory_file = paths.memory_dir / name
         if not memory_file.exists():

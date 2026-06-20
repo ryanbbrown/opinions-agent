@@ -86,13 +86,11 @@ def test_decision_log_appends(paths: CorpusPaths) -> None:
         paths,
         [
             OpinionDecision(
-                proposal_id="prop_001",
                 run_id="run-1",
-                decision="approved",
-                kind="add_opinion",
-                opinion_id="opinion-000001",
-                supporting_highlight_ids=["rw:h1"],
-                decided_at="2026-06-12T10:30:00+00:00",
+                outcome="accepted",
+                summary="Accepted a durable opinion.",
+                affected_opinion_ids=["opinion-000001"],
+                supporting_evidence_ids=["rw:h1"],
             )
         ],
     )
@@ -100,18 +98,16 @@ def test_decision_log_appends(paths: CorpusPaths) -> None:
         paths,
         [
             OpinionDecision(
-                proposal_id="prop_002",
                 run_id="run-1",
-                decision="rejected",
-                kind="add_opinion",
-                proposed_title="Rejected idea",
-                decided_at="2026-06-12T10:31:00+00:00",
+                outcome="rejected",
+                summary="Rejected a weak idea.",
             )
         ],
     )
     decisions = read_decisions(paths)
-    assert [d.decision for d in decisions] == ["approved", "rejected"]
-    assert decisions[1].proposed_title == "Rejected idea"
+    assert [d.outcome for d in decisions] == ["accepted", "rejected"]
+    assert decisions[0].affected_opinion_ids == ["opinion-000001"]
+    assert decisions[1].summary == "Rejected a weak idea."
 
 
 def test_write_json_atomic_writes_sorted_pretty_json(tmp_path) -> None:

@@ -15,7 +15,7 @@ class TelegramClient:
     async def send_message(self, chat_id: int, spec: TelegramMessageSpec) -> int:
         if not self.token:
             raise ValueError("TELEGRAM_BOT_TOKEN is required")
-        payload: dict[str, Any] = {"chat_id": chat_id, "text": spec.text}
+        payload: dict[str, Any] = {"chat_id": chat_id, "text": spec.text, "parse_mode": "HTML"}
         if spec.reply_to_message_id is not None:
             payload["reply_to_message_id"] = spec.reply_to_message_id
         if spec.force_reply:

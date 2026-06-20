@@ -27,17 +27,18 @@ def utcnow() -> datetime:
 
 class RunStatus(StrEnum):
     PENDING_AGENT = "pending_agent"
+    RUNNING_AGENT = "running_agent"
     AWAITING_USER = "awaiting_user"
-    REVISING = "revising"
     COMPLETED = "completed"
+    BLOCKED = "blocked"
     FAILED = "failed"
     ABANDONED = "abandoned"
 
 
 NON_TERMINAL_RUN_STATUSES = {
     RunStatus.PENDING_AGENT.value,
+    RunStatus.RUNNING_AGENT.value,
     RunStatus.AWAITING_USER.value,
-    RunStatus.REVISING.value,
 }
 
 
@@ -56,6 +57,7 @@ class OpinionRun(Base):
     window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     window_end: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     batch: Mapped[int] = mapped_column(Integer, default=1)
+    turn_seq: Mapped[int] = mapped_column(Integer, default=0)
     input_paths: Mapped[dict] = mapped_column(JSON, default=dict)
     agent_output: Mapped[dict] = mapped_column(JSON, default=dict)
     resume_state: Mapped[dict | None] = mapped_column(JSON, nullable=True)

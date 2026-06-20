@@ -4,52 +4,20 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from opinions_agent.agent import (
-    OpinionAgent,
-    OpinionProposalOutput,
-    TelegramButton,
-    TelegramMessageSpec,
-    build_read_context,
-    validate_proposals,
-)
+from opinions_agent.agent import AgentTurnOutput, OpinionAgent, TelegramMessageSpec, build_read_context
 from opinions_agent.config import Settings
-from opinions_agent.corpus import (
-    CorpusPaths,
-    OpinionDecision,
-    append_decisions,
-    init_data_dirs,
-    load_state,
-    read_decisions,
-    read_highlights,
-    save_state,
-)
-from opinions_agent.fsio import read_jsonl, write_jsonl_atomic, write_text_atomic
-from opinions_agent.models import (
-    NON_TERMINAL_RUN_STATUSES,
-    OpinionProposal,
-    OpinionRun,
-    ProposalStatus,
-    RunStatus,
-    TelegramInteraction,
-    utcnow,
-)
-from opinions_agent.opinions_doc import (
-    add_opinion,
-    load_opinions,
-    next_opinion_id,
-    read_sources,
-    remove_opinion,
-    update_opinion,
-    validate_opinions_files,
-)
+from opinions_agent.corpus import CorpusPaths, init_data_dirs, load_state, save_state
+from opinions_agent.fsio import write_text_atomic
+from opinions_agent.models import NON_TERMINAL_RUN_STATUSES, OpinionRun, RunStatus, TelegramInteraction, utcnow
 from opinions_agent.reader import iso_utc, parse_iso
 from opinions_agent.repo_checkout import ensure_opinions_repo, ensure_repo_file
 from opinions_agent.selection import RunPaths, finalize_run_dir, select_run_highlights, write_run_bundle
-from opinions_agent.tools.git_ops import GitToolError, assert_targets_clean, commit_and_push_opinions_files
+from opinions_agent.tools.git_ops import assert_targets_clean, commit_and_push_opinions_files
+from opinions_agent.validation import run_artifact_validation, update_opinion_id_high_water
 
 DEFAULT_WINDOW = timedelta(days=7)
 
@@ -65,15 +33,16 @@ class ActiveRunError(RuntimeError):
 
 
 VALID_TRANSITIONS = {
-    RunStatus.PENDING_AGENT.value: {RunStatus.AWAITING_USER.value, RunStatus.COMPLETED.value, RunStatus.FAILED.value},
-    RunStatus.AWAITING_USER.value: {
-        RunStatus.REVISING.value,
+    RunStatus.PENDING_AGENT.value: {RunStatus.RUNNING_AGENT.value, RunStatus.FAILED.value},
+    RunStatus.RUNNING_AGENT.value: {
+        RunStatus.AWAITING_USER.value,
         RunStatus.COMPLETED.value,
+        RunStatus.BLOCKED.value,
         RunStatus.FAILED.value,
-        RunStatus.ABANDONED.value,
     },
-    RunStatus.REVISING.value: {RunStatus.AWAITING_USER.value, RunStatus.COMPLETED.value, RunStatus.FAILED.value},
+    RunStatus.AWAITING_USER.value: {RunStatus.RUNNING_AGENT.value, RunStatus.FAILED.value, RunStatus.ABANDONED.value},
     RunStatus.COMPLETED.value: set(),
+    RunStatus.BLOCKED.value: set(),
     RunStatus.FAILED.value: set(),
     RunStatus.ABANDONED.value: set(),
 }
@@ -115,15 +84,16 @@ async def start_opinion_run(
     window_start: datetime | None = None,
     window_end: datetime | None = None,
     now: datetime | None = None,
+    run_id: str | None = None,
 ) -> OpinionRun | None:
-    """Select the current window, run the proposal agent, and request per-proposal approval.
-
-    Returns None when no highlights fall in the window. Raises ActiveRunError when a
-    previous run is still non-terminal.
-    """
     active = find_active_run(session)
     if active is not None:
         raise ActiveRunError(f"run {active.id} is still {active.status}; not starting another run")
+
+    ensure_opinions_repo(settings)
+    ensure_repo_file(settings, settings.opinions_target_file)
+    ensure_repo_file(settings, settings.opinions_sources_file)
+    assert_targets_clean(settings.opinions_repo_dir, [settings.opinions_target_file, settings.opinions_sources_file])
 
     corpus = CorpusPaths(settings.opinions_data_dir)
     init_data_dirs(corpus)
@@ -132,12 +102,14 @@ async def start_opinion_run(
     if not highlights:
         return None
 
+    run_kwargs = {"id": run_id} if run_id is not None else {}
     run = OpinionRun(
+        **run_kwargs,
         status=RunStatus.PENDING_AGENT.value,
         window_start=start,
         window_end=end,
         model=settings.harness_model,
-        attempts=1,
+        attempts=0,
     )
     session.add(run)
     session.flush()
@@ -151,123 +123,166 @@ async def start_opinion_run(
     )
     run.input_paths = {
         "dir": str(bundle.run_dir),
-        "brief_md": str(bundle.brief_md),
+        "review_summary_md": str(bundle.review_summary_md),
         "selected_highlights_jsonl": str(bundle.selected_highlights_jsonl),
         "selected_documents_jsonl": str(bundle.selected_documents_jsonl),
     }
     session.commit()
 
     try:
-        context = build_read_context(settings, bundle.run_dir)
-        output, resume_state = await agent.propose(run_id=run.id, context=context, settings=settings)
-        run.agent_output = output.model_dump(mode="json")
-        run.resume_state = resume_state
-        _store_proposal_batch(session, settings, run, output)
-        session.commit()
-        if run.status == RunStatus.AWAITING_USER.value:
-            await send_proposal_messages(session=session, settings=settings, telegram=telegram, run=run)
+        await _run_agent_turn(
+            session=session,
+            settings=settings,
+            agent=agent,
+            telegram=telegram,
+            run=run,
+            prompt_fragment=None,
+        )
         return run
     except Exception as exc:
-        if run.status in NON_TERMINAL_RUN_STATUSES:
-            transition(run, RunStatus.FAILED)
-        run.failure_reason = str(exc)
-        session.commit()
+        _fail_run(session, run, str(exc))
         raise
 
 
-def _store_proposal_batch(session: Session, settings: Settings, run: OpinionRun, output: OpinionProposalOutput) -> None:
-    """Validate and persist a proposal batch, completing the run when the batch is empty."""
-    if output.status == "needs_more_work":
-        raise ValueError(f"agent returned needs_more_work: {output.notes or 'no notes'}")
-    validate_proposals(output.proposals)
-    # Current selected highlights are the only admissible evidence for proposals;
-    # historical corpus highlights are context, not support.
-    selected = _selected_highlight_ids(run, settings)
-    for proposal in output.proposals:
-        missing = [hid for hid in proposal.supporting_highlight_ids if hid not in selected]
-        if missing:
-            raise ValueError(f"{proposal.proposal_id}: supporting highlights not in current run selection: {missing}")
-    if not output.proposals:
-        transition(run, RunStatus.COMPLETED)
-        _advance_workflow_cursor(settings, run)
-        _finalize_run_artifacts(settings, run)
+async def _run_agent_turn(
+    *,
+    session: Session,
+    settings: Settings,
+    agent: OpinionAgent,
+    telegram: TelegramSender,
+    run: OpinionRun,
+    prompt_fragment: str | None,
+) -> None:
+    if run.status == RunStatus.PENDING_AGENT.value:
+        transition(run, RunStatus.RUNNING_AGENT)
+        session.commit()
+    context = build_read_context(settings, _run_dir(run, settings))
+    output, resume_state = await agent.run_turn(
+        run_id=run.id,
+        context=context,
+        settings=settings,
+        prompt_fragment=prompt_fragment,
+        resume_state=run.resume_state,
+    )
+    run.agent_output = output.model_dump(mode="json")
+    run.resume_state = resume_state
+    run.turn_seq += 1
+    run.attempts += 1
+    if prompt_fragment is None and run.turn_seq == 1:
+        _write_initial_telegram_review(_run_dir(run, settings), output)
+    if output.status == "awaiting_user":
+        transition(run, RunStatus.AWAITING_USER)
+        session.commit()
+        await send_agent_messages(session=session, settings=settings, telegram=telegram, run=run, output=output)
         return
-    session.add_all(
-        [
-            OpinionProposal(
-                opinion_run_id=run.id,
-                batch=run.batch,
-                proposal_id=proposal.proposal_id,
-                kind=proposal.kind,
-                opinion_id=proposal.opinion_id,
-                title=proposal.title,
-                current_text=proposal.current_text,
-                proposed_text=proposal.proposed_text,
-                rationale=proposal.rationale,
-                supporting_highlight_ids=proposal.supporting_highlight_ids,
-            )
-            for proposal in output.proposals
-        ]
-    )
-    transition(run, RunStatus.AWAITING_USER)
+    if output.status == "blocked":
+        transition(run, RunStatus.BLOCKED)
+        run.failure_reason = output.notes or "agent returned blocked"
+        session.commit()
+        await send_agent_messages(session=session, settings=settings, telegram=telegram, run=run, output=output)
+        return
+    if output.status == "done":
+        session.commit()
+        await _complete_done_run(session=session, settings=settings, telegram=telegram, run=run, output=output)
+        return
+    raise ValueError(f"unsupported agent status: {output.status}")
 
 
-def _trim(text: str | None, limit: int = 900) -> str:
-    cleaned = (text or "").strip()
-    return cleaned if len(cleaned) <= limit else cleaned[: limit - 3] + "..."
-
-
-def proposal_message_spec(proposal: OpinionProposal) -> TelegramMessageSpec:
-    lines = [f"[{proposal.kind}] Proposal {proposal.proposal_id}"]
-    if proposal.opinion_id:
-        lines.append(f"Opinion: {proposal.opinion_id}")
-    if proposal.title:
-        lines.append(f"Title: {proposal.title}")
-    if proposal.current_text:
-        lines.extend(["", "Current:", _trim(proposal.current_text)])
-    if proposal.proposed_text:
-        lines.extend(["", "Proposed:", _trim(proposal.proposed_text)])
-    lines.extend(["", f"Why: {_trim(proposal.rationale)}"])
-    if proposal.supporting_highlight_ids:
-        lines.append(f"Sources: {', '.join(proposal.supporting_highlight_ids)}")
-    return TelegramMessageSpec(
-        text="\n".join(lines),
-        buttons=[
-            TelegramButton(text="Approve", callback_data=f"prop:{proposal.id}:approve"),
-            TelegramButton(text="Reject", callback_data=f"prop:{proposal.id}:reject"),
-            TelegramButton(text="Revise", callback_data=f"prop:{proposal.id}:revise"),
-        ],
-    )
-
-
-async def send_proposal_messages(
+async def _complete_done_run(
     *,
     session: Session,
     settings: Settings,
     telegram: TelegramSender,
     run: OpinionRun,
+    output: AgentTurnOutput,
 ) -> None:
-    proposals = list(
-        session.scalars(
-            select(OpinionProposal)
-            .where(
-                OpinionProposal.opinion_run_id == run.id,
-                OpinionProposal.batch == run.batch,
-                OpinionProposal.status == ProposalStatus.PENDING.value,
-            )
-            .order_by(OpinionProposal.id)
+    commit_boundary_finished = False
+    try:
+        validation = run_artifact_validation(settings=settings, run_dir=_run_dir(run, settings))
+        commit = commit_and_push_opinions_files(
+            repo_dir=settings.opinions_repo_dir,
+            target_files=[settings.opinions_target_file, settings.opinions_sources_file],
+            branch=settings.opinions_repo_branch,
+            author_name=settings.opinions_git_author_name,
+            author_email=settings.opinions_git_author_email,
+            message=f"chore: complete opinion run {run.id}",
         )
-    )
-    for proposal in proposals:
+        commit_boundary_finished = True
+        update_opinion_id_high_water(settings, validation.high_water_mark)
+        _advance_workflow_cursor(settings, run)
+        _finalize_run_artifacts(
+            settings,
+            run,
+            status=RunStatus.COMPLETED.value,
+            commit_sha=commit.commit_sha,
+            validation_summary=validation.summary,
+        )
+        transition(run, RunStatus.COMPLETED)
+        session.commit()
+        durability = f"commit {commit.commit_sha}" if commit.commit_sha else "no opinion file changes"
+        final_output = AgentTurnOutput(
+            status="done",
+            telegram_messages=[
+                message.model_copy(update={"text": f"{message.text}\n\nDurability: {durability}"})
+                for message in output.telegram_messages
+            ],
+            notes=output.notes,
+        )
+        run.agent_output = final_output.model_dump(mode="json")
+        session.commit()
+        await send_agent_messages(session=session, settings=settings, telegram=telegram, run=run, output=final_output)
+    except Exception as exc:
+        _fail_run(session, run, str(exc))
+        phase = "after commit/no-op handling" if commit_boundary_finished else "before commit"
+        await send_agent_messages(
+            session=session,
+            settings=settings,
+            telegram=telegram,
+            run=run,
+            output=AgentTurnOutput(
+                status="blocked",
+                telegram_messages=[TelegramMessageSpec(text=f"Opinion run failed {phase}: {exc}")],
+            ),
+        )
+        raise
+
+
+async def send_agent_messages(
+    *,
+    session: Session,
+    settings: Settings,
+    telegram: TelegramSender,
+    run: OpinionRun,
+    output: AgentTurnOutput | None = None,
+) -> None:
+    if output is None:
+        output = AgentTurnOutput.model_validate(run.agent_output)
+    for index, spec in enumerate(output.telegram_messages):
         await _send_idempotent(
             session=session,
             settings=settings,
             telegram=telegram,
-            key=f"opinion-run:{run.id}:proposal:{proposal.id}",
+            key=f"opinion-run:{run.id}:turn:{run.turn_seq}:message:{index}",
             run_id=run.id,
-            proposal_db_id=proposal.id,
-            spec=proposal_message_spec(proposal),
+            spec=spec,
         )
+
+
+def _write_initial_telegram_review(run_dir: Path, output: AgentTurnOutput) -> None:
+    lines = ["# Initial Telegram Messages", ""]
+    if not output.telegram_messages:
+        lines.append("(No Telegram messages.)")
+    for index, message in enumerate(output.telegram_messages, start=1):
+        if index > 1:
+            lines.extend(["", "---", ""])
+        lines.extend([f"## Message {index}", "", message.text])
+        if message.buttons:
+            lines.extend(["", "Buttons: " + ", ".join(button.text for button in message.buttons)])
+        if message.force_reply:
+            lines.extend(["", "Force reply: yes"])
+        if message.reply_to_message_id is not None:
+            lines.extend(["", f"Reply to message: {message.reply_to_message_id}"])
+    write_text_atomic(run_dir / "review" / "initial-telegram.md", "\n".join(lines).rstrip() + "\n")
 
 
 async def _send_idempotent(
@@ -278,10 +293,9 @@ async def _send_idempotent(
     key: str,
     run_id: str,
     spec: TelegramMessageSpec,
-    proposal_db_id: int | None = None,
 ) -> None:
     if settings.telegram_allowed_chat_id is None:
-        raise ValueError("TELEGRAM_ALLOWED_CHAT_ID is required to send approval messages")
+        raise ValueError("TELEGRAM_ALLOWED_CHAT_ID is required to send messages")
     existing = session.scalar(select(TelegramInteraction).where(TelegramInteraction.idempotency_key == key))
     if existing and existing.message_id is not None:
         return
@@ -289,11 +303,20 @@ async def _send_idempotent(
         existing.status = "uncertain"
         session.commit()
         return
+    if existing and existing.status == "uncertain":
+        result = session.execute(
+            update(TelegramInteraction)
+            .where(TelegramInteraction.id == existing.id, TelegramInteraction.status == "uncertain")
+            .values(status="sending", updated_at=utcnow())
+        )
+        session.commit()
+        if int(getattr(result, "rowcount", 0)) != 1:
+            return
+        session.refresh(existing)
     intent = existing or TelegramInteraction(
         direction="outbound",
         idempotency_key=key,
         opinion_run_id=run_id,
-        opinion_proposal_id=proposal_db_id,
         chat_id=settings.telegram_allowed_chat_id,
         text=spec.text,
         raw=spec.model_dump(mode="json"),
@@ -328,7 +351,7 @@ async def handle_telegram_update(
         return "duplicate"
 
     if "callback_query" in update:
-        result = await _handle_callback(session, settings, telegram, update["callback_query"], inbound)
+        result = await _handle_callback(session, settings, agent, telegram, update["callback_query"], inbound)
     elif "message" in update:
         result = await _handle_message(session, settings, agent, telegram, update["message"], inbound)
     else:
@@ -340,6 +363,7 @@ async def handle_telegram_update(
 async def _handle_callback(
     session: Session,
     settings: Settings,
+    agent: OpinionAgent,
     telegram: TelegramSender,
     callback: dict[str, Any],
     inbound: TelegramInteraction,
@@ -349,44 +373,40 @@ async def _handle_callback(
         return "duplicate"
     message = callback.get("message") or {}
     chat_id = int((message.get("chat") or {}).get("id") or 0)
+    message_id = message.get("message_id")
+    data = str(callback.get("data") or "")
     inbound.callback_query_id = callback_id
     inbound.chat_id = chat_id
-    inbound.message_id = message.get("message_id")
-    inbound.text = callback.get("data")
+    inbound.message_id = message_id
+    inbound.text = data
     if not _allowed_chat(settings, chat_id):
         await telegram.answer_callback_query(callback_id, "Not allowed")
         return "forbidden"
-    try:
-        prefix, proposal_db_id, action = str(callback.get("data", "")).split(":", 2)
-        proposal_key = int(proposal_db_id)
-    except ValueError:
-        await telegram.answer_callback_query(callback_id, "Unsupported action")
-        return "ignored"
-    if prefix != "prop":
-        await telegram.answer_callback_query(callback_id, "Unsupported action")
-        return "ignored"
-    proposal = session.get(OpinionProposal, proposal_key)
-    run = session.get(OpinionRun, proposal.opinion_run_id) if proposal else None
-    if (
-        proposal is None
-        or run is None
-        or run.status != RunStatus.AWAITING_USER.value
-        or proposal.status != ProposalStatus.PENDING.value
-        or proposal.batch != run.batch
-    ):
-        await telegram.answer_callback_query(callback_id, "This proposal is no longer pending")
+    outbound = _find_outbound_message(session, chat_id=chat_id, message_id=message_id)
+    if outbound is None or outbound.opinion_run_id is None:
+        await telegram.answer_callback_query(callback_id, "This message is no longer pending")
         return "stale"
-    if action == "approve":
-        await telegram.answer_callback_query(callback_id, "Approved")
-        return await approve_proposal(session=session, settings=settings, telegram=telegram, run=run, proposal=proposal)
-    if action == "reject":
-        await telegram.answer_callback_query(callback_id, "Rejected")
-        return await reject_proposal(session=session, settings=settings, telegram=telegram, run=run, proposal=proposal)
-    if action == "revise":
-        await telegram.answer_callback_query(callback_id, "Reply with revision notes")
-        return "awaiting_revision"
-    await telegram.answer_callback_query(callback_id, "Unsupported action")
-    return "ignored"
+    button_text = _button_text(outbound, data)
+    if button_text is None:
+        await telegram.answer_callback_query(callback_id, "Unsupported action")
+        return "ignored"
+    run = session.get(OpinionRun, outbound.opinion_run_id)
+    if run is None or run.status != RunStatus.AWAITING_USER.value:
+        await telegram.answer_callback_query(callback_id, "This run is no longer awaiting input")
+        return "stale"
+    _record_response(inbound, outbound, user_action=button_text, callback_data=data)
+    await telegram.answer_callback_query(callback_id, button_text)
+    if _current_turn_ready(session, run):
+        return await _resume_from_telegram(
+            session=session,
+            settings=settings,
+            agent=agent,
+            telegram=telegram,
+            run=run,
+            prompt_fragment=_responses_prompt(session, run),
+            result="resumed",
+        )
+    return "recorded"
 
 
 async def _handle_message(
@@ -403,41 +423,195 @@ async def _handle_message(
     inbound.text = message.get("text")
     if not _allowed_chat(settings, chat_id):
         return "forbidden"
-    feedback = (message.get("text") or "").strip()
-    if not feedback:
+    text = (message.get("text") or "").strip()
+    if not text:
         return "ignored"
-    run = _find_run_for_message(session, message)
-    if not run:
-        return "no_pending_run"
-    try:
-        transition(run, RunStatus.REVISING)
-        _supersede_pending_proposals(session, run)
-        session.commit()
-        previous_output = OpinionProposalOutput.model_validate(run.agent_output)
-        context = build_read_context(settings, _run_dir(run, settings))
-        output, resume_state = await agent.revise(
-            run_id=run.id,
-            feedback=feedback,
-            previous_output=previous_output,
-            context=context,
+    active = find_active_run(session)
+    if text in {"GO", "SKIP"} and active is not None and active.status == RunStatus.AWAITING_USER.value:
+        return await _resume_from_telegram(
+            session=session,
             settings=settings,
-            resume_state=run.resume_state,
+            agent=agent,
+            telegram=telegram,
+            run=active,
+            prompt_fragment=f"Telegram command received.\n\nCommand:\n{text}",
+            result=text.lower(),
         )
-        run.agent_output = output.model_dump(mode="json")
-        run.resume_state = resume_state
-        run.attempts += 1
-        run.batch += 1
-        _store_proposal_batch(session, settings, run, output)
-        session.commit()
-        if run.status == RunStatus.AWAITING_USER.value:
-            await send_proposal_messages(session=session, settings=settings, telegram=telegram, run=run)
-        return "revised"
+
+    reply_to = (message.get("reply_to_message") or {}).get("message_id")
+    if reply_to is None:
+        return "no_pending_run"
+    outbound = _find_outbound_message(session, chat_id=chat_id, message_id=reply_to)
+    if outbound is None or outbound.opinion_run_id is None:
+        return "no_pending_run"
+    run = session.get(OpinionRun, outbound.opinion_run_id)
+    if run is None or run.status != RunStatus.AWAITING_USER.value:
+        return "stale"
+    _record_response(inbound, outbound, user_reply=text)
+    if _current_turn_ready(session, run):
+        return await _resume_from_telegram(
+            session=session,
+            settings=settings,
+            agent=agent,
+            telegram=telegram,
+            run=run,
+            prompt_fragment=_responses_prompt(session, run),
+            result="resumed",
+        )
+    return "recorded"
+
+
+async def _resume_from_telegram(
+    *,
+    session: Session,
+    settings: Settings,
+    agent: OpinionAgent,
+    telegram: TelegramSender,
+    run: OpinionRun,
+    prompt_fragment: str,
+    result: str,
+) -> str:
+    if not _claim_awaiting_run(session, run):
+        return "already_resuming"
+    try:
+        await _run_agent_turn(
+            session=session,
+            settings=settings,
+            agent=agent,
+            telegram=telegram,
+            run=run,
+            prompt_fragment=prompt_fragment,
+        )
+        return result
     except Exception as exc:
-        if run.status in NON_TERMINAL_RUN_STATUSES:
-            transition(run, RunStatus.FAILED)
-        run.failure_reason = str(exc)
-        session.commit()
+        _fail_run(session, run, str(exc))
         raise
+
+
+def _claim_awaiting_run(session: Session, run: OpinionRun) -> bool:
+    result = session.execute(
+        update(OpinionRun)
+        .where(OpinionRun.id == run.id, OpinionRun.status == RunStatus.AWAITING_USER.value)
+        .values(status=RunStatus.RUNNING_AGENT.value, updated_at=utcnow())
+    )
+    session.commit()
+    if int(getattr(result, "rowcount", 0)) != 1:
+        session.refresh(run)
+        return False
+    session.refresh(run)
+    return True
+
+
+def _find_outbound_message(session: Session, *, chat_id: int, message_id: int | None) -> TelegramInteraction | None:
+    if message_id is None:
+        return None
+    return session.scalar(
+        select(TelegramInteraction).where(
+            TelegramInteraction.direction == "outbound",
+            TelegramInteraction.chat_id == chat_id,
+            TelegramInteraction.message_id == int(message_id),
+            TelegramInteraction.status == "sent",
+        )
+    )
+
+
+def _button_text(outbound: TelegramInteraction, callback_data: str) -> str | None:
+    for button in outbound.raw.get("buttons", []):
+        if button.get("callback_data") == callback_data:
+            return str(button.get("text") or callback_data)
+    return None
+
+
+def _record_response(
+    inbound: TelegramInteraction,
+    outbound: TelegramInteraction,
+    *,
+    user_action: str | None = None,
+    callback_data: str | None = None,
+    user_reply: str | None = None,
+) -> None:
+    inbound.opinion_run_id = outbound.opinion_run_id
+    inbound.status = "recorded"
+    inbound.raw = {
+        **(inbound.raw or {}),
+        "in_response_to_message_id": outbound.message_id,
+        "original_text": outbound.text,
+        "buttons": outbound.raw.get("buttons", []),
+        "user_action": user_action,
+        "callback_data": callback_data,
+        "user_reply": user_reply,
+    }
+
+
+def _current_turn_outbounds(session: Session, run: OpinionRun) -> list[TelegramInteraction]:
+    prefix = f"opinion-run:{run.id}:turn:{run.turn_seq}:message:"
+    return list(
+        session.scalars(
+            select(TelegramInteraction)
+            .where(
+                TelegramInteraction.direction == "outbound",
+                TelegramInteraction.opinion_run_id == run.id,
+                TelegramInteraction.idempotency_key.like(f"{prefix}%"),
+            )
+            .order_by(TelegramInteraction.id)
+        )
+    )
+
+
+def _requires_response(outbound: TelegramInteraction) -> bool:
+    return bool(outbound.raw.get("force_reply") or outbound.raw.get("buttons"))
+
+
+def _responses_by_message(session: Session, run: OpinionRun) -> dict[int, TelegramInteraction]:
+    responses = list(
+        session.scalars(
+            select(TelegramInteraction).where(
+                TelegramInteraction.direction == "inbound",
+                TelegramInteraction.opinion_run_id == run.id,
+                TelegramInteraction.status == "recorded",
+            )
+        )
+    )
+    by_message: dict[int, TelegramInteraction] = {}
+    for response in responses:
+        original = (response.raw or {}).get("in_response_to_message_id")
+        if original is not None:
+            by_message.setdefault(int(original), response)
+    return by_message
+
+
+def _current_turn_ready(session: Session, run: OpinionRun) -> bool:
+    expected = [outbound for outbound in _current_turn_outbounds(session, run) if _requires_response(outbound)]
+    if not expected:
+        return False
+    responses = _responses_by_message(session, run)
+    return all(outbound.message_id in responses for outbound in expected)
+
+
+def _responses_prompt(session: Session, run: OpinionRun) -> str:
+    responses = _responses_by_message(session, run)
+    blocks = ["Telegram responses received."]
+    for outbound in _current_turn_outbounds(session, run):
+        if not _requires_response(outbound) or outbound.message_id not in responses:
+            continue
+        response = responses[outbound.message_id]
+        blocks.extend(
+            [
+                "",
+                f"Original Telegram message_id: {outbound.message_id}",
+                "Original message text:",
+                outbound.text or "",
+                "",
+            ]
+        )
+        if (response.raw or {}).get("user_action"):
+            blocks.extend(["User action:", str(response.raw["user_action"])])
+            blocks.extend(["Callback data:", str(response.raw.get("callback_data") or "")])
+        if (response.raw or {}).get("buttons"):
+            blocks.extend(["Buttons sent:", str(response.raw["buttons"])])
+        if (response.raw or {}).get("user_reply"):
+            blocks.extend(["User reply:", str(response.raw["user_reply"])])
+    return "\n".join(blocks)
 
 
 def _run_dir(run: OpinionRun, settings: Settings) -> Path:
@@ -445,203 +619,7 @@ def _run_dir(run: OpinionRun, settings: Settings) -> Path:
     return Path(configured) if configured else RunPaths(settings.runs_dir).active_run_dir(run.id)
 
 
-def _selected_highlight_ids(run: OpinionRun, settings: Settings) -> set[str]:
-    return {str(row["highlight_id"]) for row in read_jsonl(_run_dir(run, settings) / "selected-highlights.jsonl")}
-
-
-def _supersede_pending_proposals(session: Session, run: OpinionRun) -> None:
-    pending = session.scalars(
-        select(OpinionProposal).where(
-            OpinionProposal.opinion_run_id == run.id,
-            OpinionProposal.status == ProposalStatus.PENDING.value,
-        )
-    )
-    for proposal in pending:
-        proposal.status = ProposalStatus.SUPERSEDED.value
-        proposal.decided_at = utcnow()
-
-
-async def approve_proposal(
-    *,
-    session: Session,
-    settings: Settings,
-    telegram: TelegramSender,
-    run: OpinionRun,
-    proposal: OpinionProposal,
-) -> str:
-    try:
-        applied_opinion_id, commit_sha = _apply_proposal_files(settings, proposal)
-        proposal.status = ProposalStatus.APPROVED.value
-        proposal.applied_opinion_id = applied_opinion_id
-        proposal.commit_sha = commit_sha
-        proposal.decided_at = utcnow()
-        _append_decision(settings, run, proposal, "approved")
-        _complete_run_if_terminal(session, settings, run)
-        session.commit()
-        await _send_idempotent(
-            session=session,
-            settings=settings,
-            telegram=telegram,
-            key=f"opinion-run:{run.id}:proposal:{proposal.id}:result",
-            run_id=run.id,
-            proposal_db_id=proposal.id,
-            spec=TelegramMessageSpec(
-                text=f"Applied {proposal.proposal_id} ({proposal.kind}): commit {commit_sha or 'no changes'}"
-            ),
-        )
-        return "applied"
-    except (GitToolError, OSError, ValueError) as exc:
-        if run.status in NON_TERMINAL_RUN_STATUSES:
-            transition(run, RunStatus.FAILED)
-        run.failure_reason = (
-            f"failed to apply proposal {proposal.proposal_id}: {exc}. "
-            f"Inspect {settings.opinions_repo_dir} and push or reset manually before abandoning the run."
-        )
-        session.commit()
-        raise
-
-
-async def reject_proposal(
-    *,
-    session: Session,
-    settings: Settings,
-    telegram: TelegramSender,
-    run: OpinionRun,
-    proposal: OpinionProposal,
-) -> str:
-    proposal.status = ProposalStatus.REJECTED.value
-    proposal.decided_at = utcnow()
-    _append_decision(settings, run, proposal, "rejected")
-    _complete_run_if_terminal(session, settings, run)
-    session.commit()
-    return "rejected"
-
-
-def _append_decision(settings: Settings, run: OpinionRun, proposal: OpinionProposal, decision: str) -> None:
-    corpus = CorpusPaths(settings.opinions_data_dir)
-    append_decisions(
-        corpus,
-        [
-            OpinionDecision(
-                proposal_id=proposal.proposal_id,
-                run_id=run.id,
-                decision=decision,
-                kind=proposal.kind,
-                opinion_id=proposal.applied_opinion_id or proposal.opinion_id,
-                proposed_title=proposal.title,
-                supporting_highlight_ids=list(proposal.supporting_highlight_ids or []),
-                decided_at=iso_utc(utcnow()),
-            )
-        ],
-    )
-
-
-def _apply_proposal_files(settings: Settings, proposal: OpinionProposal) -> tuple[str | None, str | None]:
-    """Apply one approved proposal to the opinions repo and commit only the allowed files."""
-    ensure_opinions_repo(settings)
-    # Assert cleanliness before ensure_repo_file: a missing file touched into existence
-    # would otherwise read as dirty and block the first apply.
-    assert_targets_clean(settings.opinions_repo_dir, [settings.opinions_target_file, settings.opinions_sources_file])
-    target = ensure_repo_file(settings, settings.opinions_target_file)
-    sources_path = ensure_repo_file(settings, settings.opinions_sources_file)
-
-    corpus = CorpusPaths(settings.opinions_data_dir)
-    highlights_by_id = {row.highlight_id: row for row in read_highlights(corpus)}
-    supporting = list(proposal.supporting_highlight_ids or [])
-    missing = [hid for hid in supporting if hid not in highlights_by_id]
-    if missing:
-        raise ValueError(f"unknown supporting highlight ids: {missing}")
-
-    doc = load_opinions(target)
-    sources = read_sources(sources_path)
-    applied_opinion_id = proposal.opinion_id
-    added_at = iso_utc(utcnow())
-
-    def source_rows(opinion_id: str) -> list[dict[str, Any]]:
-        return [
-            {
-                "opinion_id": opinion_id,
-                "highlight_id": hid,
-                "document_id": highlights_by_id[hid].document_id,
-                "document_title": highlights_by_id[hid].document_title,
-                "source_url": highlights_by_id[hid].source_url,
-                "highlight_text": highlights_by_id[hid].text,
-                "added_at": added_at,
-            }
-            for hid in supporting
-        ]
-
-    if proposal.kind == "add_opinion":
-        # Include decision-log IDs so removing the highest-numbered opinion (which purges
-        # its source rows) can never cause a stable ID to be reissued.
-        decision_ids = {d.opinion_id for d in read_decisions(corpus) if d.opinion_id}
-        existing_ids = (
-            {opinion.opinion_id for opinion in doc.opinions} | {row["opinion_id"] for row in sources} | decision_ids
-        )
-        applied_opinion_id = next_opinion_id(existing_ids)
-        doc = add_opinion(
-            doc, opinion_id=applied_opinion_id, title=proposal.title or "", body=proposal.proposed_text or ""
-        )
-        sources = _merge_sources(sources, source_rows(applied_opinion_id))
-    elif proposal.kind == "update_opinion":
-        assert proposal.opinion_id is not None
-        doc = update_opinion(
-            doc, opinion_id=proposal.opinion_id, title=proposal.title, body=proposal.proposed_text or ""
-        )
-        sources = _merge_sources(sources, source_rows(proposal.opinion_id))
-    elif proposal.kind == "remove_opinion":
-        assert proposal.opinion_id is not None
-        doc = remove_opinion(doc, opinion_id=proposal.opinion_id)
-        sources = [row for row in sources if row["opinion_id"] != proposal.opinion_id]
-    elif proposal.kind == "add_sources":
-        assert proposal.opinion_id is not None
-        doc.get(proposal.opinion_id)
-        sources = _merge_sources(sources, source_rows(proposal.opinion_id))
-    else:
-        raise ValueError(f"unsupported proposal kind: {proposal.kind}")
-
-    validate_opinions_files(doc, sources)
-    write_text_atomic(target, doc.render())
-    write_jsonl_atomic(sources_path, sources)
-    result = commit_and_push_opinions_files(
-        repo_dir=settings.opinions_repo_dir,
-        target_files=[settings.opinions_target_file, settings.opinions_sources_file],
-        branch=settings.opinions_repo_branch,
-        author_name=settings.opinions_git_author_name,
-        author_email=settings.opinions_git_author_email,
-        message=f"chore: apply opinion proposal {proposal.proposal_id} ({proposal.kind})",
-    )
-    return applied_opinion_id, result.commit_sha
-
-
-def _merge_sources(existing: list[dict[str, Any]], rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    seen = {(row["opinion_id"], row["highlight_id"]) for row in existing}
-    merged = list(existing)
-    for row in rows:
-        if (row["opinion_id"], row["highlight_id"]) not in seen:
-            merged.append(row)
-            seen.add((row["opinion_id"], row["highlight_id"]))
-    return merged
-
-
-def _complete_run_if_terminal(session: Session, settings: Settings, run: OpinionRun) -> None:
-    pending = session.scalar(
-        select(func.count())
-        .select_from(OpinionProposal)
-        .where(
-            OpinionProposal.opinion_run_id == run.id,
-            OpinionProposal.status == ProposalStatus.PENDING.value,
-        )
-    )
-    if pending:
-        return
-    transition(run, RunStatus.COMPLETED)
-    _advance_workflow_cursor(settings, run)
-    _finalize_run_artifacts(settings, run)
-
-
 def _ensure_utc(value: datetime) -> datetime:
-    """SQLite returns naive datetimes; all stored timestamps are UTC."""
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
@@ -653,59 +631,40 @@ def _advance_workflow_cursor(settings: Settings, run: OpinionRun) -> None:
     save_state(corpus, state)
 
 
-def _finalize_run_artifacts(settings: Settings, run: OpinionRun) -> None:
-    proposals = [
-        {
-            "proposal_id": proposal.proposal_id,
-            "batch": proposal.batch,
-            "kind": proposal.kind,
-            "status": proposal.status,
-            "opinion_id": proposal.applied_opinion_id or proposal.opinion_id,
-            "commit_sha": proposal.commit_sha,
-        }
-        for proposal in sorted(run.proposals, key=lambda p: p.id)
-    ]
+def _finalize_run_artifacts(
+    settings: Settings,
+    run: OpinionRun,
+    *,
+    status: str | None = None,
+    commit_sha: str | None = None,
+    validation_summary: str | None = None,
+) -> None:
     finalize_run_dir(
         RunPaths(settings.runs_dir),
         run.id,
         {
             "run_id": run.id,
-            "status": run.status,
+            "status": status or run.status,
             "window_start": iso_utc(_ensure_utc(run.window_start)),
             "window_end": iso_utc(_ensure_utc(run.window_end)),
-            "proposals": proposals,
+            "turn_seq": run.turn_seq,
+            "commit_sha": commit_sha,
+            "validation": validation_summary,
         },
     )
 
 
-def abandon_run(session: Session, settings: Settings, run: OpinionRun) -> None:
-    """Explicitly abandon a pending run without advancing the workflow cursor."""
-    transition(run, RunStatus.ABANDONED)
-    _supersede_pending_proposals(session, run)
-    _finalize_run_artifacts(settings, run)
+def _fail_run(session: Session, run: OpinionRun, reason: str) -> None:
+    if run.status in NON_TERMINAL_RUN_STATUSES:
+        run.status = RunStatus.FAILED.value
+    run.failure_reason = reason
     session.commit()
 
 
-def _find_run_for_message(session: Session, message: dict[str, Any]) -> OpinionRun | None:
-    """Revision feedback must be a reply to one of the pending run's proposal messages.
-
-    Free text without a reply is ignored so a stray message cannot supersede a pending
-    batch, and a reply to a completed run's message is never rerouted to the active run.
-    """
-    reply_to = (message.get("reply_to_message") or {}).get("message_id")
-    if reply_to is None:
-        return None
-    outbound = session.scalar(
-        select(TelegramInteraction).where(
-            TelegramInteraction.direction == "outbound",
-            TelegramInteraction.message_id == int(reply_to),
-        )
-    )
-    if outbound and outbound.opinion_run_id:
-        run = session.get(OpinionRun, outbound.opinion_run_id)
-        if run and run.status == RunStatus.AWAITING_USER.value:
-            return run
-    return None
+def abandon_run(session: Session, settings: Settings, run: OpinionRun) -> None:
+    transition(run, RunStatus.ABANDONED)
+    _finalize_run_artifacts(settings, run)
+    session.commit()
 
 
 def _allowed_chat(settings: Settings, chat_id: int) -> bool:

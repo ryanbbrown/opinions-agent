@@ -24,6 +24,7 @@ def upgrade() -> None:
         sa.Column("window_start", sa.DateTime(timezone=True), nullable=False),
         sa.Column("window_end", sa.DateTime(timezone=True), nullable=False),
         sa.Column("batch", sa.Integer(), nullable=False),
+        sa.Column("turn_seq", sa.Integer(), nullable=False),
         sa.Column("input_paths", sa.JSON(), nullable=False),
         sa.Column("agent_output", sa.JSON(), nullable=False),
         sa.Column("resume_state", sa.JSON(), nullable=True),

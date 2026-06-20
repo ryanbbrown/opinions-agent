@@ -19,15 +19,15 @@ from opinions_agent.db import init_db, make_engine, make_sessionmaker
 
 SEED_OPINIONS_MD = """# OPINIONS
 
-<!-- opinion-id: opinion-000001 -->
-## 1. Small tools should make their state legible
+## Agentic Software
 
-A tool that hides its state makes users debug vibes instead of systems.
+- A tool that hides its state makes users debug vibes instead of systems.
+  <!-- opinion-id: opinion-000001 -->
+  <!-- sources: rw:seed -->
 
-<!-- opinion-id: opinion-000002 -->
-## 2. Stale opinion that may be removed
-
-This belief is old and weakly supported.
+- This belief is old and weakly supported.
+  <!-- opinion-id: opinion-000002 -->
+  <!-- sources: rw:seed-old -->
 """
 
 
@@ -89,16 +89,30 @@ def opinions_repo(tmp_path, settings: Settings) -> Path:
     git(repo, "config", "user.name", "Test User")
     git(repo, "config", "user.email", "test@example.com")
     (repo / "OPINIONS.md").write_text(SEED_OPINIONS_MD, encoding="utf-8")
-    seed_source = {
-        "opinion_id": "opinion-000001",
-        "highlight_id": "rw:seed",
-        "document_id": "reader:seed",
-        "document_title": "Seed Doc",
-        "source_url": "https://example.com/seed",
-        "highlight_text": "Seed highlight.",
-        "added_at": "2026-05-01T00:00:00+00:00",
-    }
-    (repo / "OPINIONS_SOURCES.jsonl").write_text(json.dumps(seed_source) + "\n", encoding="utf-8")
+    seed_sources = [
+        {
+            "opinion_id": "opinion-000001",
+            "evidence_id": "rw:seed",
+            "document_id": "reader:seed",
+            "document_title": "Seed Doc",
+            "source_url": "https://example.com/seed",
+            "evidence_text": "Seed highlight.",
+            "added_at": "2026-05-01T00:00:00+00:00",
+        },
+        {
+            "opinion_id": "opinion-000002",
+            "evidence_id": "rw:seed-old",
+            "document_id": "reader:seed",
+            "document_title": "Seed Doc",
+            "source_url": "https://example.com/seed",
+            "evidence_text": "Old seed highlight.",
+            "added_at": "2026-05-01T00:00:00+00:00",
+        },
+    ]
+    (repo / "OPINIONS_SOURCES.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in seed_sources),
+        encoding="utf-8",
+    )
     (repo / "UNRELATED.md").write_text("leave me alone\n", encoding="utf-8")
     git(repo, "add", "OPINIONS.md", "OPINIONS_SOURCES.jsonl", "UNRELATED.md")
     git(repo, "commit", "-m", "chore: initial")

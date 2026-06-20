@@ -6,53 +6,79 @@ from pathlib import Path
 
 import pytest
 from conftest import seed_corpus
-from sqlalchemy import select
 
-from opinions_agent.agent import ThinHarnessOpinionAgent
+from opinions_agent.agent import ThinHarnessOpinionAgent, build_read_context
 from opinions_agent.config import Settings
-from opinions_agent.models import OpinionProposal, RunStatus
-from opinions_agent.telegram import FakeTelegramClient
-from opinions_agent.workflow import handle_telegram_update, start_opinion_run
+from opinions_agent.corpus import CorpusPaths
+from opinions_agent.selection import RunPaths, select_run_highlights, write_run_bundle
+from opinions_agent.validation import run_artifact_validation
 
 
 @pytest.mark.skipif(os.environ.get("OPINIONS_RUN_REAL_E2E") != "1", reason="set OPINIONS_RUN_REAL_E2E=1")
-async def test_real_agent_can_complete_proposal_approval_flow(session, settings: Settings, opinions_repo: Path):
+async def test_real_thinharness_agent_only_e2e(settings: Settings, opinions_repo: Path):
     if not os.environ.get("OPENAI_API_KEY"):
         pytest.skip("OPENAI_API_KEY is required")
     seed_corpus(settings)
-    telegram = FakeTelegramClient()
-
-    run = await start_opinion_run(
-        session=session,
-        settings=settings,
-        agent=ThinHarnessOpinionAgent(),
-        telegram=telegram,
-        window_start=datetime(2026, 6, 1, tzinfo=UTC),
-        window_end=datetime(2026, 6, 12, tzinfo=UTC),
+    run_id = "real-agent-e2e"
+    start = datetime(2026, 6, 1, tzinfo=UTC)
+    end = datetime(2026, 6, 12, tzinfo=UTC)
+    highlights, documents = select_run_highlights(CorpusPaths(settings.opinions_data_dir), start, end)
+    bundle = write_run_bundle(
+        run_id=run_id,
+        run_paths=RunPaths(settings.runs_dir),
+        window_start=start,
+        window_end=end,
+        highlights=highlights,
+        documents=documents,
     )
-    assert run is not None
-    assert run.status in {RunStatus.AWAITING_USER.value, RunStatus.COMPLETED.value}
-    if run.status == RunStatus.COMPLETED.value:
-        return  # model legitimately proposed an empty batch
+    context = build_read_context(settings, bundle.run_dir)
+    agent = ThinHarnessOpinionAgent()
 
-    proposal = session.scalar(select(OpinionProposal).where(OpinionProposal.opinion_run_id == run.id))
-    assert proposal is not None
-    assert len(telegram.sent) >= 1
-
-    result = await handle_telegram_update(
-        session=session,
+    first, resume_state = await agent.run_turn(
+        run_id=run_id,
+        context=context,
         settings=settings,
-        agent=ThinHarnessOpinionAgent(),
-        telegram=telegram,
-        update={
-            "update_id": 9000,
-            "callback_query": {
-                "id": "real-agent-approve",
-                "data": f"prop:{proposal.id}:approve",
-                "message": {"message_id": 1001, "chat": {"id": settings.telegram_allowed_chat_id}},
-            },
-        },
+        prompt_fragment=None,
+        resume_state=None,
     )
 
-    assert result == "applied"
-    assert proposal.commit_sha or proposal.kind == "add_sources"
+    assert first.status == "awaiting_user"
+    assert first.telegram_messages
+    assert resume_state
+
+    prompt = """Telegram responses received.
+
+Original Telegram message_id: 1001
+Original message text:
+Approve whichever single proposal is best supported by the selected evidence.
+
+User action:
+Approve
+"""
+    output, resume_state = await agent.run_turn(
+        run_id=run_id,
+        context=context,
+        settings=settings,
+        prompt_fragment=prompt,
+        resume_state=resume_state,
+    )
+
+    for _ in range(5):
+        if output.status != "awaiting_user":
+            break
+        assert output.telegram_messages
+        output, resume_state = await agent.run_turn(
+            run_id=run_id,
+            context=context,
+            settings=settings,
+            prompt_fragment="Telegram command received.\n\nCommand:\nGO",
+            resume_state=resume_state,
+        )
+    else:
+        pytest.fail("real agent did not converge after 5 resume turns")
+
+    assert output.status in {"done", "blocked"}
+    assert output.telegram_messages
+    if output.status == "done":
+        run_artifact_validation(settings=settings, run_dir=context.run_dir)
+        assert "commit" not in " ".join(message.text.lower() for message in output.telegram_messages)

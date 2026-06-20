@@ -87,7 +87,8 @@ def test_run_bundle_contains_only_current_run_files(tmp_path) -> None:
     run_paths = RunPaths(tmp_path / "runs")
     old_dir = run_paths.active_run_dir("old-run")
     old_dir.mkdir(parents=True)
-    (old_dir / "brief.md").write_text("old", encoding="utf-8")
+    (old_dir / "review" / "summary.md").parent.mkdir(parents=True)
+    (old_dir / "review" / "summary.md").write_text("old", encoding="utf-8")
     highlights = [make_highlight("rw:h1", "2026-06-02T00:00:00+00:00")]
     documents = [DocumentRow(document_id="reader:doc1", reader_id="doc1", title="Example Article", summary="Summary.")]
 
@@ -101,24 +102,26 @@ def test_run_bundle_contains_only_current_run_files(tmp_path) -> None:
     )
 
     assert sorted(p.name for p in bundle.run_dir.iterdir()) == [
-        "brief.md",
+        "review",
         "selected-documents.jsonl",
         "selected-highlights.jsonl",
     ]
+    assert sorted(p.name for p in (bundle.run_dir / "review").iterdir()) == ["summary.md"]
     selected = read_jsonl(bundle.selected_highlights_jsonl)
     assert selected[0]["document_summary"] == "Summary."
     assert selected[0]["content_path"] == "documents/reader_doc1.md"
-    brief = bundle.brief_md.read_text(encoding="utf-8")
-    assert "opinion-worthy" in brief
-    assert "old-run" not in brief
+    summary = bundle.review_summary_md.read_text(encoding="utf-8")
+    assert "Selected highlights: 1" in summary
+    assert "opinion-worthy" not in summary
+    assert "old-run" not in summary
     assert "old" not in str(read_jsonl(bundle.selected_documents_jsonl))
 
 
 def test_finalize_run_dir_moves_run_out_of_active(tmp_path) -> None:
     run_paths = RunPaths(tmp_path / "runs")
     run_dir = run_paths.active_run_dir("run-1")
-    run_dir.mkdir(parents=True)
-    (run_dir / "brief.md").write_text("brief", encoding="utf-8")
+    (run_dir / "review").mkdir(parents=True)
+    (run_dir / "review" / "summary.md").write_text("brief", encoding="utf-8")
 
     completed = finalize_run_dir(run_paths, "run-1", {"status": "completed"})
 

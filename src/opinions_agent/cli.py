@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+from pathlib import Path
 from typing import Any
 
 import uvicorn
@@ -14,6 +15,7 @@ from opinions_agent.db import init_db, make_engine, make_sessionmaker
 from opinions_agent.models import OpinionRun
 from opinions_agent.reader import ReaderClient, parse_iso, sync_reader
 from opinions_agent.repo_checkout import ensure_opinions_repo
+from opinions_agent.sample_run import prepare_sample_settings, sample_run_id, week_window_for_label
 from opinions_agent.selection import RunPaths, cleanup_completed_runs
 from opinions_agent.telegram import FakeTelegramClient, TelegramClient
 from opinions_agent.workflow import (
@@ -37,6 +39,13 @@ def main(argv: list[str] | None = None) -> None:
     run_parser.add_argument("--window-start", help="ISO timestamp lower bound override")
     run_parser.add_argument("--window-end", help="ISO timestamp upper bound override")
     run_parser.add_argument("--skip-sync", action="store_true")
+    sample = subparsers.add_parser("sample-run")
+    sample.add_argument("week", help="Chronological corpus week label, such as W04")
+    sample.add_argument("--opinions-file", default="OPINIONS.md")
+    sample.add_argument("--sources-file")
+    sample.add_argument("--deterministic-agent", action="store_true")
+    sample.add_argument("--send-telegram", action="store_true")
+    sample.add_argument("--sync", action="store_true")
     abandon = subparsers.add_parser("abandon-run")
     abandon.add_argument("run_id")
     poll = subparsers.add_parser("telegram-poll")
@@ -75,6 +84,45 @@ async def _run(args: argparse.Namespace) -> None:
             f"fetched {result.fetched_rows} rows: "
             f"{result.new_documents} new documents, {result.new_highlights} new highlights"
         )
+        return
+    if args.command == "sample-run":
+        if args.sync:
+            await sync_reader(ReaderClient(settings.readwise_token), corpus)
+        run_id = sample_run_id(args.week)
+        window_start, window_end = week_window_for_label(corpus, args.week)
+        sample_settings = prepare_sample_settings(
+            settings=settings,
+            run_id=run_id,
+            opinions_file=Path(args.opinions_file).expanduser(),
+            sources_file=Path(args.sources_file).expanduser() if args.sources_file else None,
+        )
+        sample_engine = make_engine(sample_settings.database_url)
+        init_db(sample_engine)
+        SampleSessionLocal = make_sessionmaker(sample_engine)
+        agent = DeterministicOpinionAgent() if args.deterministic_agent else ThinHarnessOpinionAgent()
+        telegram = TelegramClient(settings.telegram_bot_token) if args.send_telegram else FakeTelegramClient()
+        with SampleSessionLocal() as session:
+            run = await start_opinion_run(
+                session=session,
+                settings=sample_settings,
+                agent=agent,
+                telegram=telegram,
+                window_start=window_start,
+                window_end=window_end,
+                run_id=run_id,
+            )
+        if run is None:
+            print(f"no highlights in {args.week} ({window_start.isoformat()} to {window_end.isoformat()})")
+            return
+        run_dir = sample_settings.runs_dir / "active" / run_id
+        print(f"created sample run {run.id} ({run.status})")
+        print(f"run dir: {run_dir}")
+        print(f"opinion artifact copy: {sample_settings.opinions_target_path}")
+        print(f"source artifact copy: {sample_settings.opinions_sources_path}")
+        if isinstance(telegram, FakeTelegramClient):
+            print(f"fake telegram messages: {len(telegram.sent)}")
+        else:
+            print("telegram messages sent")
         return
 
     with SessionLocal() as session:

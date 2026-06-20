@@ -34,7 +34,7 @@ class RunPaths:
 @dataclass(frozen=True)
 class RunBundle:
     run_dir: Path
-    brief_md: Path
+    review_summary_md: Path
     selected_highlights_jsonl: Path
     selected_documents_jsonl: Path
     highlights: list[HighlightRow]
@@ -59,8 +59,12 @@ def select_run_highlights(
     window_start: datetime,
     window_end: datetime,
 ) -> tuple[list[HighlightRow], list[DocumentRow]]:
-    highlights = select_window(read_highlights(paths), window_start, window_end)
     documents_by_id = document_by_id(paths)
+    highlights = [
+        highlight
+        for highlight in select_window(read_highlights(paths), window_start, window_end)
+        if not _is_backfill_document(documents_by_id.get(highlight.document_id))
+    ]
     seen: dict[str, DocumentRow] = {}
     for highlight in highlights:
         document = documents_by_id.get(highlight.document_id)
@@ -69,39 +73,8 @@ def select_run_highlights(
     return highlights, list(seen.values())
 
 
-BRIEF_INSTRUCTIONS = """\
-You help maintain Ryan's OPINIONS.md: a living set of durable beliefs, principles, heuristics, and taste judgments.
-
-Read all selected highlights first. Each selected highlight includes document title, generated summary, highlight
-text, notes, timestamps, and a path to full content.
-
-Use document summaries and highlights as your primary evidence. Read full document content only when the
-summary/highlights are insufficient, ambiguous, or potentially misleading.
-
-Read OPINIONS.md to avoid duplicate opinions and to understand the current style. Read OPINIONS_SOURCES.jsonl to
-understand which highlights already support existing opinions.
-
-Read opinion-decisions.jsonl to avoid repeating rejected proposals and to understand recently accepted proposal
-history.
-
-Propose only opinion-worthy changes. An opinion-worthy item is a reusable belief, principle, heuristic, or judgment
-Ryan might want to stand behind later. Do not merely summarize articles. Do not propose claims that are only
-interesting facts, news, or one-off observations.
-
-Consider four proposal types:
-
-1. add_opinion: add a new opinion when selected highlights support a durable new belief.
-2. update_opinion: update an existing opinion when new evidence clarifies, narrows, strengthens, or corrects it.
-3. remove_opinion: remove an existing opinion when new evidence makes it stale, wrong, redundant, or too weak.
-4. add_sources: add new sources to an existing opinion when selected highlights support it without text changes.
-
-For each proposal, include the supporting highlight IDs and a short rationale. Current selected highlights are the
-only source for new proposals. Historical highlights may be searched for context, conflict checking, or support
-comparison, but do not treat old highlights as fresh evidence unless the current selected highlights independently
-justify the action.
-
-Return structured output only. Do not write files. The app will request Telegram approval before applying any change.
-"""
+def _is_backfill_document(document: DocumentRow | None) -> bool:
+    return document is not None and any(tag in {"backfill", ".backfill"} for tag in document.tags)
 
 
 def write_run_bundle(
@@ -115,9 +88,11 @@ def write_run_bundle(
 ) -> RunBundle:
     run_dir = run_paths.active_run_dir(run_id)
     run_dir.mkdir(parents=True, exist_ok=True)
+    review_dir = run_dir / "review"
+    review_dir.mkdir(parents=True, exist_ok=True)
     highlights_path = run_dir / "selected-highlights.jsonl"
     documents_path = run_dir / "selected-documents.jsonl"
-    brief_path = run_dir / "brief.md"
+    summary_path = review_dir / "summary.md"
 
     write_jsonl_atomic(highlights_path, [row.model_dump(mode="json") for row in highlights])
     write_jsonl_atomic(documents_path, [row.model_dump(mode="json") for row in documents])
@@ -133,14 +108,12 @@ def write_run_bundle(
             "",
             "Documents:",
             *[f"- {title}" for title in titles],
-            "",
-            BRIEF_INSTRUCTIONS,
         ]
     )
-    write_text_atomic(brief_path, brief)
+    write_text_atomic(summary_path, brief)
     return RunBundle(
         run_dir=run_dir,
-        brief_md=brief_path,
+        review_summary_md=summary_path,
         selected_highlights_jsonl=highlights_path,
         selected_documents_jsonl=documents_path,
         highlights=highlights,

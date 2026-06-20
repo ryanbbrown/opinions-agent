@@ -6,13 +6,13 @@ This file records durable product behavior so plan reviews can check the intende
 
 ### Purpose
 
-The app owns synchronization, evidence selection, proposal workflow state, approval routing, artifact validation, and git commits. The agent receives bounded context, asks for approval on conceptual opinion changes, and edits allowed opinion and context artifacts after approval or revision.
+The app owns synchronization, evidence selection, Telegram routing, artifact validation, and git commits. The agent receives bounded context and a permanently bounded write surface for configured opinion and context artifacts. The app relies on the agent conversation contract to avoid premature opinion edits, and relies on the shared validator plus git durability gates before committing any artifact changes.
 
 ### Requirements
 
 - RUNTIME-1: The agent must not write corpus source files, run bundles, database rows, or git commits directly.
-- RUNTIME-2: The agent may write only configured opinion artifacts and configured agent context artifacts, and only as part of the approved opinion-edit workflow.
-- RUNTIME-3: The app must validate agent proposal output before storing proposals and must validate opinion artifacts before committing them.
+- RUNTIME-2: The agent may write only configured opinion artifacts and configured agent context artifacts. The app does not dynamically grant and revoke file-writing tools by workflow phase; it keeps the write boundary narrow for the whole run.
+- RUNTIME-3: The app exposes one deterministic artifact validator to the agent as a tool and runs the same validator once more before committing. There is no separate agent validator and app validator.
 - RUNTIME-4: Local runs and deployed runs use the same workflow; environment variables select local paths, fake Telegram, real Telegram, and repository targets.
 
 ## Durable Corpus
@@ -49,65 +49,71 @@ Each opinion run deterministically selects the evidence window, writes an inspec
 - RUN-4: Selected evidence is sorted oldest-first, with stable ID tie-breaking.
 - RUN-5: A run with no selected evidence does not create a database run.
 - RUN-6: A created run writes an active run bundle under `RUNS_DIR/active/<run_id>/`.
-- RUN-7: The active run bundle contains `brief.md`, `selected-highlights.jsonl`, and `selected-documents.jsonl`.
-- RUN-8: The agent read surface includes the active run bundle, corpus indexes, readable document content, memory files, current opinion files, opinion provenance files, and agent-maintained decision context.
-- RUN-9: Raw Reader payloads, old run directories, git internals, and app state files are excluded from the default agent read surface.
-- RUN-10: Completed runs move from `active/` to `completed/` and write a `final.json` summary.
-- RUN-11: Completed run directories are cleaned up according to `OPINIONS_COMPLETED_RUN_RETENTION_DAYS`.
+- RUN-7: The active run bundle contains `selected-highlights.jsonl`, `selected-documents.jsonl`, and a `review/` directory for human-readable review artifacts.
+- RUN-8: Human review artifacts include the run summary and initial Telegram message transcript; they are for inspection and are not part of the agent read surface.
+- RUN-9: The agent read surface includes selected run evidence files, corpus indexes, readable document content, memory files, current opinion files, opinion provenance files, and agent-maintained decision context.
+- RUN-10: Raw Reader payloads, old run directories, git internals, human review artifacts, and app state files are excluded from the default agent read surface.
+- RUN-11: Completed runs move from `active/` to `completed/` and write a `final.json` summary.
+- RUN-12: Completed run directories are cleaned up according to `OPINIONS_COMPLETED_RUN_RETENTION_DAYS`.
+- RUN-13: Local sample runs are disposable run-scoped executions. They copy selected opinion artifacts and corpus context under the run directory, point the agent at those copied paths, and must not grant the agent read/write access to the original opinion repository files.
+- RUN-14: Human-readable sample run IDs may include the start timestamp and requested corpus week label so local runs can be inspected chronologically.
 
 ## Agent Runtime Shape
 
 ### Purpose
 
-An opinion run is handled as one resumable agent conversation. The app pauses and resumes that conversation around Telegram approval and revision events while retaining ownership of operational state, validation, and git durability.
+An opinion run is handled as one resumable agent conversation with one bounded tool surface. The app pauses and resumes that conversation around Telegram approval and revision events while retaining ownership of operational state, validation, and git durability.
 
 ### Requirements
 
 - AGENT-1: Proposal generation, revision handling, approval follow-up, artifact editing, artifact validation, and final user-facing responses are turns in the same resumable agent conversation for a run.
 - AGENT-2: The app must not model proposal generation and artifact editing as separate harness definitions, independent agents, or per-proposal agent products.
-- AGENT-3: The agent uses one harness definition with a bounded read surface that supports direct reads, directory discovery, text search, and JSONL search over allowed context.
-- AGENT-4: The agent write surface is always limited to configured opinion artifacts and configured agent context artifacts. The agent must not edit opinion artifacts before approval or revision decisions permit artifact edits, and the app must not commit artifact edits until the approved edit workflow has completed and validation passes.
-- AGENT-5: Structured agent output is for app-owned communication and status boundaries, such as Telegram proposal messages, completion state, and summaries. It is not an app-interpreted file-mutation command language.
-- AGENT-6: When writes are allowed, the agent edits files directly with filesystem tools and validates those edits with the app-provided validation tool before completing the edit turn.
+- AGENT-3: The agent uses one harness definition with a bounded read surface that supports direct reads, directory discovery, globbing, text search, and JSONL search over allowed context.
+- AGENT-4: The agent write surface is always available and always limited to configured opinion artifacts and configured agent context artifacts. The agent is instructed not to make durable opinion changes before approval or revision decisions justify those changes; the app does not attempt to infer every valid editing moment by toggling write tools.
+- AGENT-5: Native structured agent output is for app-owned communication and status boundaries, such as Telegram messages, completion state, and summaries. It is not an app-interpreted file-mutation command language.
+- AGENT-6: The agent edits files directly with filesystem tools and validates durable opinion edits with the shared validation tool before reporting the approved workflow complete.
+- AGENT-7: The app must not commit artifact edits until the agent returns `done`, the same shared validator passes at the commit boundary, and commit/no-op handling succeeds.
+- AGENT-8: If the agent cannot make progress without manual intervention, it returns `blocked`; the app records a terminal blocked or failed run state, sends the explanatory Telegram message, preserves active artifacts for inspection, and does not validate or commit.
 
 ## Proposal And Editing Workflow
 
 ### Purpose
 
-The agent proposes conceptual opinion changes, gets human approval or revision through Telegram, and then edits the allowed opinion and context artifacts directly within the write boundary.
+The agent proposes conceptual opinion changes and gets human approval or revision through Telegram. It has the same bounded write surface throughout the run, but durable opinion changes are only committed after the approved workflow reaches a validation-and-commit boundary.
 
 ### Requirements
 
 - PROPOSAL-1: The agent proposes conceptual opinion changes for approval, not exact patches for the app to apply.
 - PROPOSAL-2: A conceptual proposal may add, revise, remove, merge, split, reorder, or attach evidence to opinions.
-- PROPOSAL-3: The app stores proposal, approval, rejection, and revision context as operational workflow state, but does not interpret proposal categories as file-mutation commands.
+- PROPOSAL-3: The app stores Telegram messages, callbacks, replies, `GO`/`SKIP` commands, and agent outputs as operational workflow state, but does not interpret proposal categories as file-mutation commands.
 - PROPOSAL-4: Supporting evidence for proposals must come from the current run's selected evidence, not merely from historical corpus rows.
 - PROPOSAL-5: User approval or revision applies to the conceptual change. The final file edits may differ from the original proposal when the user gives revision feedback.
-- PROPOSAL-6: After approval or revision decisions are available, the agent edits the allowed opinion and context artifacts directly to reflect the accepted conceptual changes.
-- PROPOSAL-7: The app provides deterministic artifact validation to the agent as a tool. The agent must successfully validate its edits before completing the approved opinion-edit workflow.
-- PROPOSAL-8: The app does not normalize, deduplicate, repair, or otherwise rewrite agent-edited artifacts. It may run the same validation once after the agent completes as a final guard before committing.
-- PROPOSAL-9: A run with an empty successful proposal batch completes and advances the workflow cursor.
+- PROPOSAL-6: The app does not decide whether the agent may call file-edit tools on each turn. Instead, the conversation contract tells the agent when opinion edits are appropriate, and the app only treats edits as durable after approval or revision decisions are available and the approved workflow completes.
+- PROPOSAL-7: The app provides the shared deterministic artifact validator to the agent as a tool. The agent must successfully validate durable opinion edits before returning `done`.
+- PROPOSAL-8: The shared validator is not an editor. It does not normalize, deduplicate, allocate IDs, repair comments, or otherwise rewrite agent-edited artifacts.
+- PROPOSAL-9: A run with no opinion-worthy changes may complete with `status="done"`, no artifact changes, no commit SHA, and workflow cursor advancement after validation/no-op handling succeeds.
 
 ## Telegram Approval
 
 ### Purpose
 
-Telegram provides human approval or revision for every proposed conceptual opinion change before the agent edits opinion artifacts.
+Telegram provides human approval or revision for proposed conceptual opinion changes before those changes become durable committed opinion artifacts.
 
 ### Requirements
 
-- TELEGRAM-1: The app sends one Telegram approval message per pending conceptual proposal with Approve, Reject, and Revise actions.
-- TELEGRAM-2: Only `TELEGRAM_ALLOWED_CHAT_ID` may approve, reject, or revise proposals.
-- TELEGRAM-3: Telegram callbacks and reply messages are idempotent and scoped to current pending proposals.
-- TELEGRAM-4: Revision feedback supersedes only pending proposals in the active batch; already approved conceptual decisions remain accepted.
-- TELEGRAM-5: A failed revision marks the run failed and records the failure reason.
-- TELEGRAM-6: Approve, Reject, and Revise interactions record user decisions but do not by themselves start the approved edit workflow while other proposals in the active batch remain pending.
-- TELEGRAM-7: The approved edit workflow starts when every proposal in the active batch has been addressed, or when the allowed user sends exactly `GO` or `SKIP` as a standalone uppercase message.
-- TELEGRAM-8: A standalone `GO` message is valid only from `TELEGRAM_ALLOWED_CHAT_ID`, only for an active run with at least one addressed proposal, and only when the message text is exactly `GO`.
-- TELEGRAM-9: When `GO` starts the approved edit workflow before every proposal is addressed, still-pending proposals remain pending and actionable after the addressed subset is processed.
-- TELEGRAM-10: A standalone `SKIP` message is valid only from `TELEGRAM_ALLOWED_CHAT_ID`, only for an active run with at least one pending proposal, and only when the message text is exactly `SKIP`.
-- TELEGRAM-11: When `SKIP` starts the approved edit workflow before every proposal is addressed, still-pending proposals in the active batch are finalized as deferred for that run.
-- TELEGRAM-12: Free-text messages other than valid revision replies, standalone `GO`, or standalone `SKIP` do not start agent work.
+- TELEGRAM-1: The agent returns one or more Telegram messages as structured output. It will usually return one HTML approval message per conceptual proposal, but the app must allow flexible message counts and layouts. Messages that require user input must include buttons or `force_reply`; plain `awaiting_user` messages can still be advanced by exact `GO` or `SKIP`.
+- TELEGRAM-2: The app sends agent-returned Telegram messages as Telegram HTML with deterministic turn/message idempotency keys and stores the real Telegram `chat_id`, `message_id`, full text, buttons, run ID, and raw response/update details needed for idempotency and later resume context.
+- TELEGRAM-2A: Proposal messages keep the proposed opinion, section, and source article titles visible. Full evidence text and raw evidence IDs belong inside expandable evidence blocks.
+- TELEGRAM-3: Only `TELEGRAM_ALLOWED_CHAT_ID` may drive the run through callbacks, replies, or exact standalone `GO`/`SKIP` commands.
+- TELEGRAM-4: Telegram callbacks and reply messages are idempotent and scoped to the stored outbound message they reference by `(chat_id, message_id)`.
+- TELEGRAM-5: For callbacks, the app finds the stored outbound message by `(chat_id, message_id)`, verifies the callback data matches a stored button on that message, records the callback, and answers Telegram's callback query.
+- TELEGRAM-6: For replies, the app finds the stored outbound message being replied to by `(chat_id, message_id)` and records the concrete user reply.
+- TELEGRAM-7: Exact standalone `GO` and `SKIP` remain valid Telegram commands only from `TELEGRAM_ALLOWED_CHAT_ID` while a run is awaiting user input.
+- TELEGRAM-8: A callback or reply does not by itself resume the agent. The app records individual responses until every outbound message awaiting a user response has been answered.
+- TELEGRAM-9: When all expected responses are present, the app atomically claims the run with `awaiting_user -> running_agent` and resumes the same agent conversation with the relevant original message text/buttons plus concrete user actions/replies. If the claim fails, another request already started or completed the resume.
+- TELEGRAM-10: Valid exact `GO` and `SKIP` commands attempt the same atomic `awaiting_user -> running_agent` claim immediately, then route the command into the same agent conversation as user input. The app does not itself decide which conceptual proposals are accepted, deferred, skipped, or ready for file edits.
+- TELEGRAM-11: Free-text messages other than valid replies to stored outbound messages or exact standalone `GO`/`SKIP` commands do not start agent work.
+- TELEGRAM-12: A failed agent resume marks the run failed and records the failure reason.
 
 ## Opinion Files And Provenance
 
@@ -134,24 +140,28 @@ Accepted opinions and accepted supporting evidence are durable artifacts owned b
 - OPINIONS-6: `OPINIONS_SOURCES.jsonl` stores one row per supporting evidence item for each accepted opinion, so multiple rows may reference the same opinion ID.
 - OPINIONS-7: Source rows include the opinion ID, evidence ID, document ID, document title, source URL, evidence text, and timestamp when the source was attached.
 - OPINIONS-8: `OPINIONS_SOURCES.jsonl` is the machine-readable provenance source. Inline `sources` comments in `OPINIONS.md` are useful for local review and human orientation, but they do not replace source rows.
-- OPINIONS-9: Approved agent edits may mutate `OPINIONS.md` and `OPINIONS_SOURCES.jsonl` within the allowed write boundary; the app validates the resulting artifacts instead of applying a fixed set of mutation commands.
+- OPINIONS-9: Approved agent edits may mutate `OPINIONS.md` and `OPINIONS_SOURCES.jsonl` within the allowed write boundary; the app validates the resulting artifacts with the shared validator instead of applying a fixed set of mutation commands.
 - OPINIONS-10: Source rows are unique by `(opinion_id, evidence_id)`. Duplicate source rows are invalid and must be fixed by the agent, not silently deduplicated by the app.
-- OPINIONS-11: The agent writes stable opinion IDs into `OPINIONS.md`. The app validates IDs but does not allocate, insert, or rewrite them.
-- OPINIONS-12: Removed opinion IDs are retired and must not be reused. Validation rejects malformed, missing, duplicate, or retired/reused opinion IDs and source rows that reference missing opinions.
+- OPINIONS-11: The agent writes stable opinion IDs into `OPINIONS.md`. The app validates IDs but does not allocate, insert, rewrite, or repair them.
+- OPINIONS-12: The app maintains an opinion ID high-water mark as the authoritative reuse guard. Newly introduced opinion IDs must be greater than the high-water mark unless they already existed at the `git HEAD` baseline. The app updates the high-water mark only after validation and commit/no-op handling succeeds.
+- OPINIONS-13: Validation rejects malformed, missing, duplicate, or high-water-violating opinion IDs; source rows that reference missing opinions; opinions without machine-readable source rows; inline source comments without matching source rows; and newly added source rows whose metadata does not match the selected run evidence.
+- OPINIONS-14: Newly added source rows in a completed run are valid only when their `evidence_id` appears in that run's selected evidence bundle. Historical corpus rows may provide context, but they are not fresh support for new source attachments.
+- OPINIONS-15: The ideal source schema uses `evidence_id` only. There is no backwards-compatibility requirement for legacy `highlight_id` source rows.
 
 ## Git Application
 
 ### Purpose
 
-Approved changes become durable after the agent edits the allowed opinion artifacts and the app validates, commits, and pushes only the configured opinions files.
+Approved changes become durable only after the app validates, commits, and pushes the configured opinions files. The agent may have the bounded file-edit tools throughout the run; git durability is the app-owned boundary.
 
 ### Requirements
 
-- GIT-1: Before the agent edits approved opinion artifacts, the app ensures the configured opinions repository exists locally, is on the configured branch, and has clean target opinion files.
-- GIT-2: After the agent completes, the app validates the edited artifacts once as a final guard before committing. A final validation failure marks the run failed; the app does not repair the artifacts.
+- GIT-1: Before an opinion run starts an agent conversation with access to opinion artifacts, the app ensures the configured opinions repository exists locally, is on the configured branch, and has clean target opinion files.
+- GIT-2: After the agent completes, the app runs the same shared validator once as a final guard before committing. The validator compares current working-tree artifacts to the `git HEAD` baseline for the configured opinion files. A final validation failure marks the run failed; the app does not repair the artifacts.
 - GIT-3: The app commits only `OPINIONS_TARGET_FILE` and `OPINIONS_SOURCES_FILE`, and refuses to commit if staged files include other paths.
-- GIT-4: A no-op approved edit produces no commit SHA.
+- GIT-4: A no-op approved durable change produces no commit SHA.
 - GIT-5: Push failures mark the run failed and preserve the local commit for manual recovery.
+- GIT-6: Success-style final Telegram messages are sent only after validation and commit/no-op handling succeed. If validation, commit, or push fails, the app sends an app-authored operational failure message instead of agent success wording.
 
 ## Decision History
 
