@@ -107,9 +107,9 @@ async def test_start_run_writes_bundle_and_sends_agent_messages(
     assert "# Initial Telegram Messages" in initial_telegram
     assert "<b>Add Opinion #1</b>" in initial_telegram
     assert "<blockquote expandable>" in initial_telegram
-    assert "Buttons: Approve, Reject, Revise" in initial_telegram
+    assert "Buttons: Approve, Reject" in initial_telegram
     assert len(telegram.sent) == 1
-    assert [button.text for button in telegram.sent[0][1].buttons] == ["Approve", "Reject", "Revise"]
+    assert [button.text for button in telegram.sent[0][1].buttons] == ["Approve", "Reject"]
     outbound = outbound_for_run(session, run)
     assert outbound.idempotency_key == f"opinion-run:{run.id}:turn:1:message:0"
     assert outbound.message_id == 1001

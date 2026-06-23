@@ -1,4 +1,6 @@
-# opinions-agent
+# OPINIONS.md Agent
+
+*Note: work in progress*
 
 `opinions-agent` syncs Readwise Reader documents, summaries, full content, highlights, and notes into a durable
 filesystem corpus, deterministically selects the current window of evidence for each run, asks an agent to propose
@@ -96,6 +98,9 @@ uv run opinions-agent init-runtime     # ensure data dirs, memory files, repo ch
 uv run opinions-agent sync             # Reader -> filesystem corpus
 uv run opinions-agent opinion-run      # sync + select window + start/resume Telegram approval loop
 uv run opinions-agent sample-run W04   # local disposable run against copied artifacts under .runs/active/
+uv run opinions-agent sample-session init review --opinions-file OPINIONS.md
+uv run opinions-agent sample-session run review W04 --send-telegram
+uv run opinions-agent sample-session poll review
 uv run opinions-agent abandon-run ID   # abandon a stuck pending run (cursor does not advance)
 uv run opinions-agent telegram-poll    # local alternative to the webhook
 uv run opinions-agent set-telegram-webhook https://your-service.up.railway.app/telegram/webhook
@@ -113,6 +118,12 @@ current working directory. If no sources file is supplied, sample setup derives 
 `<!-- sources: ... -->` comments and the copied corpus evidence rows. By default, sample runs use fake Telegram and
 write review files only; pass `--send-telegram` to send the sample run's Telegram messages to the configured allowed
 chat.
+
+Use `sample-session` when you want to walk through several weeks against the same isolated copied state. `init` creates
+`.runs/sessions/<name>/` with a copied corpus, copied opinion artifacts, local SQLite database, and disposable local git
+remote. `run <name> W04` starts a week run against that session copy, and `poll <name>` processes Telegram responses
+until the active run completes. Later weeks in the same session start from the session's updated `OPINIONS.md`, source
+rows, memory files, and decision log; commits go only to the session's local `remote.git`, not the real opinions repo.
 
 Deterministic local smoke run without Telegram sends:
 

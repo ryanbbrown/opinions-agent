@@ -57,6 +57,7 @@ Each opinion run deterministically selects the evidence window, writes an inspec
 - RUN-12: Completed run directories are cleaned up according to `OPINIONS_COMPLETED_RUN_RETENTION_DAYS`.
 - RUN-13: Local sample runs are disposable run-scoped executions. They copy selected opinion artifacts and corpus context under the run directory, point the agent at those copied paths, and must not grant the agent read/write access to the original opinion repository files.
 - RUN-14: Human-readable sample run IDs may include the start timestamp and requested corpus week label so local runs can be inspected chronologically.
+- RUN-15: Local sample sessions are disposable session-scoped executions. They copy opinion artifacts and corpus context once, keep database state, run artifacts, memory, decisions, and local git commits under the session directory, and let later week runs start from earlier approved session changes without touching the original opinion repository files.
 
 ## Agent Runtime Shape
 

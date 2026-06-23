@@ -62,9 +62,9 @@ Human-readable article title — rw:highlight_id
 Full highlight text.
 </blockquote>
 
-Every proposal message must include exactly three Telegram buttons in its TelegramMessageSpec.buttons field:
-Approve, Reject, and Revise. Use stable callback_data values scoped to the proposal, such as approve:add-opinion-1,
-reject:add-opinion-1, and revise:add-opinion-1.
+Every proposal message must include exactly two Telegram buttons in its TelegramMessageSpec.buttons field: Approve and
+Reject. Use stable callback_data values scoped to the proposal, such as approve:add-opinion-1 and reject:add-opinion-1.
+If Ryan replies to a proposal message, treat that reply as revision context for that specific proposal.
 
 For revise/remove/merge/discussion proposals, replace the heading with the proposal kind and include the current text
 or discussion question when useful. Keep raw evidence IDs out of the visible proposal body; include them inside the

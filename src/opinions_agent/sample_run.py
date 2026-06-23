@@ -41,6 +41,59 @@ def sample_run_id(label: str, now: datetime | None = None) -> str:
     return f"{timestamp}-{label.strip().upper()}"
 
 
+def sample_session_dir(settings: Settings, name: str) -> Path:
+    normalized = name.strip()
+    if not normalized:
+        raise ValueError("sample session name is required")
+    if any(part in {".", ".."} for part in Path(normalized).parts):
+        raise ValueError("sample session name must not contain . or .. path components")
+    return (settings.runs_dir / "sessions" / normalized).resolve()
+
+
+def prepare_sample_session_settings(
+    *,
+    settings: Settings,
+    name: str,
+    opinions_file: Path,
+    sources_file: Path | None = None,
+) -> Settings:
+    session_dir = sample_session_dir(settings, name)
+    if session_dir.exists():
+        raise FileExistsError(f"sample session already exists: {session_dir}")
+    session_dir.mkdir(parents=True)
+    sample_data = session_dir / "data"
+    _copy_sample_corpus(CorpusPaths(settings.opinions_data_dir), CorpusPaths(sample_data))
+    _init_sample_repo(
+        repo_dir=session_dir / "opinions-repo",
+        remote_dir=session_dir / "remote.git",
+        branch=settings.opinions_repo_branch,
+        author_name=settings.opinions_git_author_name,
+        author_email=settings.opinions_git_author_email,
+        opinions_file=opinions_file,
+        sources_file=sources_file,
+        corpus=CorpusPaths(sample_data),
+    )
+    return sample_session_settings(settings=settings, name=name)
+
+
+def sample_session_settings(*, settings: Settings, name: str) -> Settings:
+    session_dir = sample_session_dir(settings, name)
+    if not session_dir.exists():
+        raise FileNotFoundError(f"sample session not found: {session_dir}")
+    return replace(
+        settings,
+        database_url=f"sqlite+pysqlite:///{session_dir / 'sample-session.db'}",
+        opinions_repo_url=str(session_dir / "remote.git"),
+        opinions_repo_dir=session_dir / "opinions-repo",
+        opinions_target_file="OPINIONS.md",
+        opinions_sources_file="OPINIONS_SOURCES.jsonl",
+        opinions_data_dir=session_dir / "data",
+        runs_dir=session_dir / "runs",
+        local_trace_dir=session_dir / ".traces",
+        use_fake_telegram=True,
+    )
+
+
 def prepare_sample_settings(
     *,
     settings: Settings,

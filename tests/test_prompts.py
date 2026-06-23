@@ -16,6 +16,8 @@ def test_system_prompt_includes_rules_file_verbatim(tmp_path) -> None:
     assert "All Telegram message text is sent as Telegram HTML" in prompt
     assert "<blockquote expandable>" in prompt
     assert "Send one Telegram message per proposed opinion change" in prompt
+    assert "Approve and" in prompt
+    assert "treat that reply as revision context" in prompt
 
 
 def test_turn_prompt_separates_initial_run_context_from_resume_context(tmp_path) -> None:

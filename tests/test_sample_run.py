@@ -8,7 +8,14 @@ from conftest import seed_corpus
 from opinions_agent.config import Settings
 from opinions_agent.corpus import CorpusPaths
 from opinions_agent.fsio import read_jsonl
-from opinions_agent.sample_run import prepare_sample_settings, sample_run_id, week_window_for_label
+from opinions_agent.sample_run import (
+    prepare_sample_session_settings,
+    prepare_sample_settings,
+    sample_run_id,
+    sample_session_dir,
+    sample_session_settings,
+    week_window_for_label,
+)
 from opinions_agent.tools.git_ops import run_git
 
 
@@ -61,3 +68,34 @@ def test_prepare_sample_settings_copies_artifacts_inside_run_dir(settings: Setti
 
     opinions_file.write_text("changed outside sample\n", encoding="utf-8")
     assert sample.opinions_target_path.read_text(encoding="utf-8") != "changed outside sample\n"
+
+
+def test_sample_session_settings_reuses_copied_artifacts(settings: Settings, tmp_path: Path) -> None:
+    seed_corpus(settings)
+    opinions_file = tmp_path / "OPINIONS.md"
+    opinions_file.write_text(
+        """# OPINIONS
+
+## Agentic Software
+
+- Existing opinion.
+  <!-- opinion-id: opinion-000001 -->
+  <!-- sources: rw:h0 -->
+""",
+        encoding="utf-8",
+    )
+
+    created = prepare_sample_session_settings(settings=settings, name="review", opinions_file=opinions_file)
+    loaded = sample_session_settings(settings=settings, name="review")
+    session_dir = sample_session_dir(settings, "review")
+
+    assert created == loaded
+    assert loaded.database_url == f"sqlite+pysqlite:///{session_dir / 'sample-session.db'}"
+    assert loaded.runs_dir == session_dir / "runs"
+    assert loaded.opinions_data_dir == session_dir / "data"
+    assert loaded.opinions_repo_dir == session_dir / "opinions-repo"
+    assert loaded.opinions_target_path.read_text(encoding="utf-8") == opinions_file.read_text(encoding="utf-8")
+    assert read_jsonl(loaded.opinions_sources_path)[0]["evidence_id"] == "rw:h0"
+
+    opinions_file.write_text("changed outside session\n", encoding="utf-8")
+    assert loaded.opinions_target_path.read_text(encoding="utf-8") != "changed outside session\n"

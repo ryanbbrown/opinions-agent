@@ -15,7 +15,14 @@ from opinions_agent.db import init_db, make_engine, make_sessionmaker
 from opinions_agent.models import OpinionRun
 from opinions_agent.reader import ReaderClient, parse_iso, sync_reader
 from opinions_agent.repo_checkout import ensure_opinions_repo
-from opinions_agent.sample_run import prepare_sample_settings, sample_run_id, week_window_for_label
+from opinions_agent.sample_run import (
+    prepare_sample_session_settings,
+    prepare_sample_settings,
+    sample_run_id,
+    sample_session_dir,
+    sample_session_settings,
+    week_window_for_label,
+)
 from opinions_agent.selection import RunPaths, cleanup_completed_runs
 from opinions_agent.telegram import FakeTelegramClient, TelegramClient
 from opinions_agent.workflow import (
@@ -46,6 +53,20 @@ def main(argv: list[str] | None = None) -> None:
     sample.add_argument("--deterministic-agent", action="store_true")
     sample.add_argument("--send-telegram", action="store_true")
     sample.add_argument("--sync", action="store_true")
+    sample_session = subparsers.add_parser("sample-session")
+    sample_session_subparsers = sample_session.add_subparsers(dest="sample_session_command", required=True)
+    sample_session_init = sample_session_subparsers.add_parser("init")
+    sample_session_init.add_argument("name")
+    sample_session_init.add_argument("--opinions-file", default="OPINIONS.md")
+    sample_session_init.add_argument("--sources-file")
+    sample_session_run = sample_session_subparsers.add_parser("run")
+    sample_session_run.add_argument("name")
+    sample_session_run.add_argument("week", help="Chronological corpus week label, such as W04")
+    sample_session_run.add_argument("--deterministic-agent", action="store_true")
+    sample_session_run.add_argument("--send-telegram", action="store_true")
+    sample_session_poll = sample_session_subparsers.add_parser("poll")
+    sample_session_poll.add_argument("name")
+    sample_session_poll.add_argument("--once", action="store_true")
     abandon = subparsers.add_parser("abandon-run")
     abandon.add_argument("run_id")
     poll = subparsers.add_parser("telegram-poll")
@@ -124,6 +145,59 @@ async def _run(args: argparse.Namespace) -> None:
         else:
             print("telegram messages sent")
         return
+    if args.command == "sample-session":
+        if args.sample_session_command == "init":
+            sample_settings = prepare_sample_session_settings(
+                settings=settings,
+                name=args.name,
+                opinions_file=Path(args.opinions_file).expanduser(),
+                sources_file=Path(args.sources_file).expanduser() if args.sources_file else None,
+            )
+            sample_engine = make_engine(sample_settings.database_url)
+            init_db(sample_engine)
+            RunPaths(sample_settings.runs_dir).active_dir.mkdir(parents=True, exist_ok=True)
+            print(f"created sample session {args.name}")
+            print(f"session dir: {sample_session_dir(settings, args.name)}")
+            print(f"opinion artifact copy: {sample_settings.opinions_target_path}")
+            print(f"source artifact copy: {sample_settings.opinions_sources_path}")
+            return
+        sample_settings = sample_session_settings(settings=settings, name=args.name)
+        sample_engine = make_engine(sample_settings.database_url)
+        init_db(sample_engine)
+        SampleSessionLocal = make_sessionmaker(sample_engine)
+        if args.sample_session_command == "run":
+            window_start, window_end = week_window_for_label(CorpusPaths(sample_settings.opinions_data_dir), args.week)
+            run_id = sample_run_id(args.week)
+            agent = DeterministicOpinionAgent() if args.deterministic_agent else ThinHarnessOpinionAgent()
+            telegram = TelegramClient(settings.telegram_bot_token) if args.send_telegram else FakeTelegramClient()
+            with SampleSessionLocal() as session:
+                try:
+                    run = await start_opinion_run(
+                        session=session,
+                        settings=sample_settings,
+                        agent=agent,
+                        telegram=telegram,
+                        window_start=window_start,
+                        window_end=window_end,
+                        run_id=run_id,
+                    )
+                except ActiveRunError as exc:
+                    print(str(exc))
+                    return
+            if run is None:
+                print(f"no highlights in {args.week} ({window_start.isoformat()} to {window_end.isoformat()})")
+                return
+            print(f"created sample session run {run.id} ({run.status})")
+            print(f"session dir: {sample_session_dir(settings, args.name)}")
+            print(f"run dir: {sample_settings.runs_dir / 'active' / run.id}")
+            if isinstance(telegram, FakeTelegramClient):
+                print(f"fake telegram messages: {len(telegram.sent)}")
+            else:
+                print("telegram messages sent")
+            return
+        if args.sample_session_command == "poll":
+            await _poll(sample_settings, SampleSessionLocal, once=args.once)
+            return
 
     with SessionLocal() as session:
         if args.command == "opinion-run":

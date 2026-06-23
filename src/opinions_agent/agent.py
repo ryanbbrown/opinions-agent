@@ -245,7 +245,6 @@ def _deterministic_awaiting_output(context: AgentReadContext) -> AgentTurnOutput
                 buttons=[
                     TelegramButtonSpec(text="Approve", callback_data="approve:add-deterministic-opinion"),
                     TelegramButtonSpec(text="Reject", callback_data="reject:add-deterministic-opinion"),
-                    TelegramButtonSpec(text="Revise", callback_data="revise:add-deterministic-opinion"),
                 ],
             )
         ],
