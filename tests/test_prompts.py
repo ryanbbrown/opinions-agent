@@ -5,19 +5,16 @@ from types import SimpleNamespace
 from opinions_agent.prompts import build_system_prompt, build_turn_prompt
 
 
-def test_system_prompt_includes_rules_file_verbatim(tmp_path) -> None:
-    rules = "# Test Rules\n\nSENTINEL: keep this exact rule text.\n"
-    rules_path = tmp_path / "RULES.md"
-    rules_path.write_text(rules, encoding="utf-8")
+def test_system_prompt_treats_replies_as_feedback_not_approval() -> None:
+    prompt = build_system_prompt()
 
-    prompt = build_system_prompt(rules_path=rules_path)
-
-    assert f"Opinion selection rules from RULES.md:\n\n{rules.rstrip()}" in prompt
-    assert "All Telegram message text is sent as Telegram HTML" in prompt
-    assert "<blockquote expandable>" in prompt
-    assert "Send one Telegram message per proposed opinion change" in prompt
-    assert "Approve and" in prompt
-    assert "treat that reply as revision context" in prompt
+    assert "Only an Approve button callback is approval" in prompt
+    assert "treat that reply as contextual feedback" in prompt
+    assert "send a revised proposal message with fresh Approve and Reject buttons" in prompt
+    assert "Never infer approval from a free-text reply" in prompt
+    assert "<b>Add Opinion #2 (Revised)</b>" in prompt
+    assert "include one final plain Telegram message summarizing" in prompt
+    assert "instead of &apos; or &quot;" in prompt
 
 
 def test_turn_prompt_separates_initial_run_context_from_resume_context(tmp_path) -> None:

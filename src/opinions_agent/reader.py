@@ -45,6 +45,10 @@ def reader_note_key(reader_id: str) -> str:
     return f"reader-note:{reader_id}"
 
 
+def reader_summary_key(reader_id: str) -> str:
+    return f"reader-summary:{reader_id}"
+
+
 def parse_iso(value: Any) -> datetime | None:
     if not value:
         return None
@@ -133,6 +137,7 @@ def _highlight_row(
     highlighted_at = parse_iso(row.get("created_at") or row.get("saved_at"))
     return HighlightRow(
         highlight_id=highlight_key(reader_id),
+        evidence_kind="highlight",
         document_id=parent.document_id if parent else document_key(parent_reader_id),
         reader_id=parent_reader_id,
         document_title=parent.title if parent else None,
@@ -156,6 +161,7 @@ def _document_note_row(row: dict[str, Any], parent: DocumentRow | None) -> Highl
     highlighted_at = parse_iso(row.get("created_at") or row.get("saved_at"))
     return HighlightRow(
         highlight_id=reader_note_key(reader_id),
+        evidence_kind="document_note",
         document_id=parent.document_id if parent else document_key(parent_reader_id),
         reader_id=reader_id,
         document_title=parent.title if parent else None,

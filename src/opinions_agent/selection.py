@@ -7,9 +7,16 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from opinions_agent.corpus import CorpusPaths, DocumentRow, HighlightRow, document_by_id, read_highlights
+from opinions_agent.corpus import (
+    CorpusPaths,
+    DocumentRow,
+    HighlightRow,
+    document_by_id,
+    read_documents,
+    read_highlights,
+)
 from opinions_agent.fsio import write_jsonl_atomic, write_text_atomic
-from opinions_agent.reader import iso_utc, parse_iso
+from opinions_agent.reader import iso_utc, iso_week, parse_iso, reader_summary_key
 
 
 @dataclass(frozen=True)
@@ -60,11 +67,27 @@ def select_run_highlights(
     window_end: datetime,
 ) -> tuple[list[HighlightRow], list[DocumentRow]]:
     documents_by_id = document_by_id(paths)
+    all_highlights = read_highlights(paths)
     highlights = [
         highlight
-        for highlight in select_window(read_highlights(paths), window_start, window_end)
+        for highlight in select_window(all_highlights, window_start, window_end)
         if not _is_backfill_document(documents_by_id.get(highlight.document_id))
     ]
+    documents_with_evidence = {highlight.document_id for highlight in all_highlights}
+    highlights.extend(
+        _select_document_summary_evidence(
+            paths=paths,
+            window_start=window_start,
+            window_end=window_end,
+            documents_with_evidence=documents_with_evidence,
+        )
+    )
+    highlights.sort(
+        key=lambda highlight: (
+            _evidence_datetime(highlight) or datetime.min.replace(tzinfo=UTC),
+            highlight.highlight_id,
+        )
+    )
     seen: dict[str, DocumentRow] = {}
     for highlight in highlights:
         document = documents_by_id.get(highlight.document_id)
@@ -75,6 +98,55 @@ def select_run_highlights(
 
 def _is_backfill_document(document: DocumentRow | None) -> bool:
     return document is not None and any(tag in {"backfill", ".backfill"} for tag in document.tags)
+
+
+def _select_document_summary_evidence(
+    *,
+    paths: CorpusPaths,
+    window_start: datetime,
+    window_end: datetime,
+    documents_with_evidence: set[str],
+) -> list[HighlightRow]:
+    selected: list[tuple[datetime, HighlightRow]] = []
+    for document in read_documents(paths):
+        if document.document_id in documents_with_evidence:
+            continue
+        if _is_backfill_document(document):
+            continue
+        if not document.tags:
+            continue
+        summary = (document.summary or "").strip()
+        if not summary:
+            continue
+        saved_at = parse_iso(document.saved_at)
+        if saved_at is None or not (window_start <= saved_at < window_end):
+            continue
+        selected.append((saved_at, _document_summary_evidence(document, summary, saved_at)))
+    selected.sort(key=lambda item: (item[0], item[1].highlight_id))
+    return [row for _, row in selected]
+
+
+def _document_summary_evidence(document: DocumentRow, summary: str, saved_at: datetime) -> HighlightRow:
+    return HighlightRow(
+        highlight_id=reader_summary_key(document.reader_id),
+        evidence_kind="document_summary",
+        document_id=document.document_id,
+        reader_id=document.reader_id,
+        document_title=document.title,
+        document_author=document.author,
+        document_summary=document.summary,
+        source_url=document.source_url,
+        text=summary,
+        highlighted_at=iso_utc(saved_at),
+        highlighted_date=saved_at.astimezone(UTC).date().isoformat(),
+        highlighted_week=iso_week(saved_at),
+        updated_at=document.updated_at,
+        content_path=document.content_path,
+    )
+
+
+def _evidence_datetime(evidence: HighlightRow) -> datetime | None:
+    return parse_iso(evidence.highlighted_at)
 
 
 def write_run_bundle(
@@ -98,12 +170,14 @@ def write_run_bundle(
     write_jsonl_atomic(documents_path, [row.model_dump(mode="json") for row in documents])
 
     titles = sorted({highlight.document_title or "Untitled" for highlight in highlights})
+    summary_count = sum(1 for highlight in highlights if highlight.evidence_kind == "document_summary")
     brief = "\n".join(
         [
             f"# Opinion run {run_id}",
             "",
             f"Window: {iso_utc(window_start)} to {iso_utc(window_end)}",
-            f"Selected highlights: {len(highlights)}",
+            f"Selected evidence: {len(highlights)}",
+            f"Selected document summaries: {summary_count}",
             f"Selected documents: {len(documents)}",
             "",
             "Documents:",

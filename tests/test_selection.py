@@ -83,6 +83,77 @@ def test_select_run_highlights_joins_unique_documents(paths: CorpusPaths) -> Non
     assert sorted(d.document_id for d in documents) == ["reader:doc1", "reader:doc2"]
 
 
+def test_select_run_highlights_includes_tagged_document_summaries(paths: CorpusPaths) -> None:
+    upsert_documents(
+        paths,
+        [
+            DocumentRow(
+                document_id="reader:summary-doc",
+                reader_id="summary-doc",
+                title="Summary Only",
+                source_url="https://example.com/summary",
+                summary="A tagged document summary can support an opinion.",
+                tags=["ai direction"],
+                saved_at="2026-06-02T00:00:00+00:00",
+                content_path="documents/reader_summary-doc.md",
+            ),
+            DocumentRow(
+                document_id="reader:untagged",
+                reader_id="untagged",
+                title="Untagged",
+                summary="No tag means no selected summary evidence.",
+                saved_at="2026-06-03T00:00:00+00:00",
+            ),
+            DocumentRow(
+                document_id="reader:empty-summary",
+                reader_id="empty-summary",
+                title="Empty Summary",
+                tags=["ai direction"],
+                saved_at="2026-06-04T00:00:00+00:00",
+            ),
+            DocumentRow(
+                document_id="reader:backfill",
+                reader_id="backfill",
+                title="Backfill",
+                summary="Backfill summaries stay out of runs.",
+                tags=["backfill"],
+                saved_at="2026-06-05T00:00:00+00:00",
+            ),
+        ],
+    )
+
+    highlights, documents = select_run_highlights(paths, WINDOW_START, WINDOW_END)
+
+    assert [h.highlight_id for h in highlights] == ["reader-summary:summary-doc"]
+    assert highlights[0].evidence_kind == "document_summary"
+    assert highlights[0].text == "A tagged document summary can support an opinion."
+    assert highlights[0].highlighted_at == "2026-06-02T00:00:00+00:00"
+    assert highlights[0].content_path == "documents/reader_summary-doc.md"
+    assert [document.document_id for document in documents] == ["reader:summary-doc"]
+
+
+def test_select_run_highlights_does_not_add_summary_for_document_with_existing_evidence(paths: CorpusPaths) -> None:
+    upsert_documents(
+        paths,
+        [
+            DocumentRow(
+                document_id="reader:doc1",
+                reader_id="doc1",
+                title="Example Article",
+                summary="Summary.",
+                tags=["ai direction"],
+                saved_at="2026-06-02T00:00:00+00:00",
+            ),
+        ],
+    )
+    upsert_highlights(paths, [make_highlight("rw:h1", "2026-06-03T00:00:00+00:00")])
+
+    highlights, documents = select_run_highlights(paths, WINDOW_START, WINDOW_END)
+
+    assert [h.highlight_id for h in highlights] == ["rw:h1"]
+    assert [document.document_id for document in documents] == ["reader:doc1"]
+
+
 def test_run_bundle_contains_only_current_run_files(tmp_path) -> None:
     run_paths = RunPaths(tmp_path / "runs")
     old_dir = run_paths.active_run_dir("old-run")
@@ -111,7 +182,8 @@ def test_run_bundle_contains_only_current_run_files(tmp_path) -> None:
     assert selected[0]["document_summary"] == "Summary."
     assert selected[0]["content_path"] == "documents/reader_doc1.md"
     summary = bundle.review_summary_md.read_text(encoding="utf-8")
-    assert "Selected highlights: 1" in summary
+    assert "Selected evidence: 1" in summary
+    assert "Selected document summaries: 0" in summary
     assert "opinion-worthy" not in summary
     assert "old-run" not in summary
     assert "old" not in str(read_jsonl(bundle.selected_documents_jsonl))

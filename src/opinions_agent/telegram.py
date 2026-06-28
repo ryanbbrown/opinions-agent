@@ -40,6 +40,18 @@ class TelegramClient:
             response = await client.post(f"{self.base_url}/answerCallbackQuery", json=payload)
             response.raise_for_status()
 
+    async def edit_message_text(self, chat_id: int, message_id: int, text: str) -> None:
+        payload: dict[str, Any] = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": text,
+            "parse_mode": "HTML",
+            "reply_markup": {"inline_keyboard": []},
+        }
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.post(f"{self.base_url}/editMessageText", json=payload)
+            response.raise_for_status()
+
     async def get_updates(self, offset: int | None = None) -> list[dict[str, Any]]:
         payload: dict[str, Any] = {"timeout": 30}
         if offset is not None:
@@ -54,6 +66,7 @@ class FakeTelegramClient:
     def __init__(self) -> None:
         self.sent: list[tuple[int, TelegramMessageSpec]] = []
         self.answered_callbacks: list[tuple[str, str | None]] = []
+        self.edited_messages: list[tuple[int, int, str]] = []
         self._next_message_id = 1000
 
     async def send_message(self, chat_id: int, spec: TelegramMessageSpec) -> int:
@@ -63,3 +76,6 @@ class FakeTelegramClient:
 
     async def answer_callback_query(self, callback_query_id: str, text: str | None = None) -> None:
         self.answered_callbacks.append((callback_query_id, text))
+
+    async def edit_message_text(self, chat_id: int, message_id: int, text: str) -> None:
+        self.edited_messages.append((chat_id, message_id, text))

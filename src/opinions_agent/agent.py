@@ -8,7 +8,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from opinions_agent.config import Settings
+from opinions_agent.config import OPINION_AGENT_MODEL, OPINION_AGENT_REASONING_EFFORT, Settings
 from opinions_agent.corpus import CorpusPaths
 from opinions_agent.fsio import append_jsonl, read_jsonl, write_jsonl_atomic, write_text_atomic
 from opinions_agent.opinions_doc import Opinion, OpinionsDocument, load_opinions, next_opinion_id
@@ -144,7 +144,8 @@ def build_harness_config(*, context: AgentReadContext, settings: Settings):
     tracing = make_langfuse_tracing(settings)
     return HarnessConfig(
         root=_common_root(read_paths + write_paths),
-        model=settings.harness_model,
+        model=OPINION_AGENT_MODEL,
+        extra_body={"reasoning": {"effort": OPINION_AGENT_REASONING_EFFORT}},
         system_prompt=build_system_prompt(),
         builtin_tools=["read", "search", "jsonl_search", "list", "glob", "edit", "write"],
         read_paths=[str(path) for path in read_paths],

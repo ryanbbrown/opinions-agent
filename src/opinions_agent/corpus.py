@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -78,6 +78,7 @@ class DocumentRow(BaseModel):
 
 class HighlightRow(BaseModel):
     highlight_id: str
+    evidence_kind: Literal["highlight", "document_note", "document_summary"] = "highlight"
     document_id: str
     reader_id: str
     document_title: str | None = None

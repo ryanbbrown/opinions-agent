@@ -17,7 +17,7 @@ Durable corpus (`OPINIONS_DATA_DIR`, default `.readwise`):
 ```text
 state.json                 # app-owned sync + workflow cursor state
 documents.jsonl            # one normalized row per Reader document
-highlights.jsonl           # one normalized row per highlight (primary query surface)
+highlights.jsonl           # one normalized row per Reader highlight or document-level note
 opinion-decisions.jsonl    # agent-authored compact decision summaries
 documents/reader_<id>.md   # readable full document content
 raw/reader_<id>.json       # untouched API payloads (not agent context)
@@ -39,8 +39,9 @@ failure details. Proposal rows may exist as an audit cache, but they do not driv
 
 1. `sync` pulls Reader v3 documents/highlights/notes into the corpus (`state.json` advances only after all
    corpus writes succeed).
-2. `opinion-run` refuses to start while any run is non-terminal, selects highlights between the workflow cursor
-   and now, writes the run bundle, and starts one ThinHarness conversation.
+2. `opinion-run` refuses to start while any run is non-terminal, selects evidence between the workflow cursor and now,
+   including Reader highlights, document-level notes, and tagged document summaries, writes the run bundle, and starts
+   one ThinHarness conversation.
 3. The agent returns native structured output: `status` plus one or more Telegram message specs. The app sends those
    messages exactly, with deterministic `opinion-run:<run_id>:turn:<turn_seq>:message:<index>` idempotency keys, and
    stores Telegram's real `(chat_id, message_id)` values.
@@ -63,7 +64,7 @@ failure details. Proposal rows may exist as an audit cache, but they do not driv
 
 - Opinion sentence.
   <!-- opinion-id: opinion-000013 -->
-  <!-- sources: rw:source-id, reader-note:document-id -->
+  <!-- sources: rw:source-id, reader-note:document-id, reader-summary:document-id -->
 ```
 
 Opinion IDs are agent-written and app-validated. IDs are stable, unique, and never reused after retirement. Source rows
@@ -82,8 +83,8 @@ uv run alembic upgrade head      # or: uv run opinions-agent init-db (creates ta
 ```
 
 Required local variables: `DATABASE_URL`, `READWISE_TOKEN`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_CHAT_ID`,
-`HARNESS_MODEL` (+ `OPENAI_API_KEY` for the default model), and the `OPINIONS_*` repo settings shown in
-`.env.example`.
+`OPENAI_API_KEY`, and the `OPINIONS_*` repo settings shown in `.env.example`. The ThinHarness agent model is set in
+code to `openai:gpt-5.5` with medium reasoning effort.
 
 Safety default: `OPINIONS_TARGET_FILE` defaults to `TEST_OPINIONS.md` so local runs never touch the real
 `OPINIONS.md` by accident. Production (Railway) must set `OPINIONS_TARGET_FILE=OPINIONS.md` explicitly. Note that

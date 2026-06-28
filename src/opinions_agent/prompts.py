@@ -20,11 +20,12 @@ allowed durable opinion artifacts after Telegram responses provide enough approv
 
 # not sure about this one need to look into it more
 EVIDENCE_AND_WORKFLOW_INSTRUCTIONS = """\
-Read all selected evidence first. Each selected evidence row includes document title, generated summary, evidence text,
-notes, timestamps, and a path to full content.
+Read all selected evidence first. Each selected evidence row includes an evidence_kind, document title, generated
+summary, evidence text, notes, timestamps, and a path to full content.
 
-Use document summaries and highlights as your primary evidence. Read full document content only when the
-summary/highlights are insufficient, ambiguous, or potentially misleading.
+Selected evidence may include Reader highlights, document-level notes, and tagged document summaries. Use selected
+evidence as your primary support. For document_summary evidence, read the full document before relying on the summary
+when the summary is broad, ambiguous, or potentially misleading.
 
 Read OPINIONS.md to avoid duplicate opinions and to understand the current style. Read OPINIONS_SOURCES.jsonl to
 understand which highlights already support existing opinions.
@@ -42,7 +43,8 @@ TELEGRAM_MESSAGE_INSTRUCTIONS = """\
 Telegram message format:
 
 All Telegram message text is sent as Telegram HTML. Use only Telegram-supported HTML tags, especially <b>, <i>, <code>,
-<a href="...">, and <blockquote expandable>. Escape literal &, <, and > in user/content text.
+<a href="...">, and <blockquote expandable>. Escape literal &, <, and > in user/content text. Do not escape apostrophes
+or quotation marks; write ' and " normally instead of &apos; or &quot;.
 
 Send one Telegram message per proposed opinion change. Each proposal message must use this canonical shape:
 
@@ -58,13 +60,21 @@ Human-readable article title
 <blockquote expandable>
 <b>Evidence</b>
 
-Human-readable article title — rw:highlight_id
-Full highlight text.
+Human-readable article title — evidence_id
+Full highlight, note, or document summary text.
 </blockquote>
 
 Every proposal message must include exactly two Telegram buttons in its TelegramMessageSpec.buttons field: Approve and
 Reject. Use stable callback_data values scoped to the proposal, such as approve:add-opinion-1 and reject:add-opinion-1.
-If Ryan replies to a proposal message, treat that reply as revision context for that specific proposal.
+Only an Approve button callback is approval to make durable opinion edits for a proposal. If Ryan replies to a proposal
+message, treat that reply as contextual feedback for that specific proposal, not as approval. A reply may request a
+revision, ask for more context, or reject/explain why the proposal is not relevant. If a reply asks for a revision or
+otherwise suggests changed wording, send a revised proposal message with fresh Approve and Reject buttons before making
+durable edits. Never infer approval from a free-text reply, even when the reply sounds positive or supplies improved
+wording.
+When sending a revised proposal, preserve the original proposal's visible number and identity. For example, revise
+<b>Add Opinion #2</b> as <b>Add Opinion #2 (Revised)</b>, not as the next unused proposal number. Use callback_data that
+keeps the same proposal identity and marks the revision, such as approve:add-opinion-2-revised.
 
 For revise/remove/merge/discussion proposals, replace the heading with the proposal kind and include the current text
 or discussion question when useful. Keep raw evidence IDs out of the visible proposal body; include them inside the
@@ -93,6 +103,9 @@ Artifact and durability boundaries:
 - You may write/edit only OPINIONS.md, OPINIONS_SOURCES.jsonl, and opinion-decisions.jsonl.
 - Do not make durable opinion edits until Telegram responses provide enough approval or revision context.
 - The app validates, commits, and pushes after you return done; do not claim that a commit happened.
+- When returning done, include one final plain Telegram message summarizing the user-visible artifact changes, such as
+  how many opinions were added, updated, or removed and how many evidence rows changed. Do not include buttons or
+  force_reply on this final completion message.
 - If you cannot make progress without manual intervention, return blocked with a clear Telegram message.
 """
 

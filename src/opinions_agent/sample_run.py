@@ -7,7 +7,14 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from opinions_agent.config import Settings
-from opinions_agent.corpus import CorpusPaths, HighlightRow, init_data_dirs, read_highlights
+from opinions_agent.corpus import (
+    CorpusPaths,
+    DocumentRow,
+    HighlightRow,
+    init_data_dirs,
+    read_documents,
+    read_highlights,
+)
 from opinions_agent.fsio import write_jsonl_atomic
 from opinions_agent.opinions_doc import load_opinions
 from opinions_agent.reader import parse_iso
@@ -189,28 +196,47 @@ def _init_sample_repo(
 def _source_rows_from_inline(opinions_file: Path, corpus: CorpusPaths) -> list[dict]:
     doc = load_opinions(opinions_file)
     highlights = {highlight.highlight_id: highlight for highlight in read_highlights(corpus)}
+    summary_documents = {f"reader-summary:{document.reader_id}": document for document in read_documents(corpus)}
     rows: list[dict] = []
     missing: list[str] = []
     for opinion in doc.opinions:
         for evidence_id in opinion.sources:
             highlight = highlights.get(evidence_id)
-            if highlight is None:
-                missing.append(f"{opinion.opinion_id}:{evidence_id}")
+            if highlight is not None:
+                rows.append(_source_row_for_highlight(opinion.opinion_id, evidence_id, highlight))
                 continue
-            rows.append(
-                {
-                    "opinion_id": opinion.opinion_id,
-                    "evidence_id": evidence_id,
-                    "document_id": highlight.document_id,
-                    "document_title": highlight.document_title,
-                    "source_url": highlight.source_url,
-                    "evidence_text": highlight.text,
-                    "added_at": highlight.highlighted_at or "",
-                }
-            )
+            document = summary_documents.get(evidence_id)
+            if document is not None and (document.summary or "").strip():
+                rows.append(_source_row_for_document_summary(opinion.opinion_id, evidence_id, document))
+                continue
+            missing.append(f"{opinion.opinion_id}:{evidence_id}")
     if missing:
         raise ValueError(f"inline opinion sources are missing from the copied corpus: {missing}")
     return rows
+
+
+def _source_row_for_highlight(opinion_id: str, evidence_id: str, highlight: HighlightRow) -> dict:
+    return {
+        "opinion_id": opinion_id,
+        "evidence_id": evidence_id,
+        "document_id": highlight.document_id,
+        "document_title": highlight.document_title,
+        "source_url": highlight.source_url,
+        "evidence_text": highlight.text,
+        "added_at": highlight.highlighted_at or "",
+    }
+
+
+def _source_row_for_document_summary(opinion_id: str, evidence_id: str, document: DocumentRow) -> dict:
+    return {
+        "opinion_id": opinion_id,
+        "evidence_id": evidence_id,
+        "document_id": document.document_id,
+        "document_title": document.title,
+        "source_url": document.source_url,
+        "evidence_text": (document.summary or "").strip(),
+        "added_at": document.saved_at or "",
+    }
 
 
 def _run(*args: str) -> None:

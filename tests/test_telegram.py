@@ -55,3 +55,23 @@ async def test_telegram_messages_are_sent_as_html(monkeypatch) -> None:
             },
         )
     ]
+
+
+async def test_telegram_message_edit_marks_callbacks_and_removes_buttons(monkeypatch) -> None:
+    fake_client = FakeAsyncClient()
+    monkeypatch.setattr("opinions_agent.telegram.httpx.AsyncClient", lambda **kwargs: fake_client)
+
+    await TelegramClient("token").edit_message_text(123, 42, "<b>✅ Approved - Add Opinion #1</b>")
+
+    assert fake_client.posts == [
+        (
+            "https://api.telegram.org/bottoken/editMessageText",
+            {
+                "chat_id": 123,
+                "message_id": 42,
+                "text": "<b>✅ Approved - Add Opinion #1</b>",
+                "parse_mode": "HTML",
+                "reply_markup": {"inline_keyboard": []},
+            },
+        )
+    ]

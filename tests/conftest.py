@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from opinions_agent.config import Settings
+from opinions_agent.config import OPINION_AGENT_MODEL, Settings
 from opinions_agent.corpus import (
     CorpusPaths,
     DocumentRow,
@@ -49,7 +49,7 @@ def settings(tmp_path) -> Settings:
         telegram_allowed_chat_id=12345,
         telegram_webhook_secret="secret",
         readwise_token="fake-readwise",
-        harness_model="openai:gpt-5.2",
+        harness_model=OPINION_AGENT_MODEL,
         langfuse_public_key="",
         langfuse_secret_key="",
         langfuse_base_url="https://us.cloud.langfuse.com",

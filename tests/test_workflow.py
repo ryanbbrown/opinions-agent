@@ -76,6 +76,18 @@ def callback_update(update_id: int, outbound: TelegramInteraction, data: str, ch
     }
 
 
+def reply_update(update_id: int, outbound: TelegramInteraction, text: str, chat_id: int = 12345) -> dict:
+    return {
+        "update_id": update_id,
+        "message": {
+            "message_id": 10000 + update_id,
+            "chat": {"id": chat_id},
+            "text": text,
+            "reply_to_message": {"message_id": outbound.message_id},
+        },
+    }
+
+
 async def test_active_run_blocks_new_run(session, settings: Settings, opinions_repo: Path) -> None:
     seed_corpus(settings)
     session.add(OpinionRun(status=RunStatus.AWAITING_USER.value, window_start=WINDOW_START, window_end=WINDOW_END))
@@ -154,6 +166,13 @@ async def test_callback_resumes_agent_then_validates_commits_and_records_durabil
     committed_files = set(run_git(opinions_repo, "diff", "--name-only", "HEAD~1", "HEAD").splitlines())
     assert committed_files == {"OPINIONS.md", "OPINIONS_SOURCES.jsonl"}
     assert run_git(opinions_repo, "status", "--porcelain") == "M UNRELATED.md"
+    assert len(telegram.edited_messages) == 1
+    edited_chat_id, edited_message_id, edited_text = telegram.edited_messages[0]
+    assert edited_chat_id == settings.telegram_allowed_chat_id
+    assert edited_message_id == outbound.message_id
+    assert edited_text.startswith("<b>✅ Approved - Add Opinion #1</b>")
+    assert "Durable systems should preserve provenance" in edited_text
+    assert "<blockquote expandable>" in edited_text
     assert "Durability: commit" in telegram.sent[-1][1].text
     assert not RunPaths(settings.runs_dir).active_run_dir(run.id).exists()
     assert (RunPaths(settings.runs_dir).completed_run_dir(run.id) / "final.json").exists()
@@ -214,6 +233,33 @@ async def test_records_partial_responses_without_resuming_until_all_required_mes
     assert "Original Telegram message_id" in agent.prompts[-1]
     assert "Callback data:\napprove:first" in agent.prompts[-1]
     assert run.status == RunStatus.COMPLETED.value
+
+
+async def test_reply_marks_original_message_addressed_without_resuming_until_all_required_messages_answered(
+    session, settings: Settings, opinions_repo: Path
+) -> None:
+    seed_corpus(settings)
+    telegram = FakeTelegramClient()
+    agent = TwoMessageAgent()
+    run = await start_run(session, settings, telegram, agent)
+    outbounds = list(
+        session.scalars(
+            select(TelegramInteraction)
+            .where(TelegramInteraction.direction == "outbound", TelegramInteraction.opinion_run_id == run.id)
+            .order_by(TelegramInteraction.id)
+        )
+    )
+
+    result = await handle(session, settings, telegram, reply_update(202, outbounds[0], "please revise"), agent)
+
+    assert result == "recorded"
+    assert run.status == RunStatus.AWAITING_USER.value
+    assert len(agent.prompts) == 1
+    assert len(telegram.edited_messages) == 1
+    edited_chat_id, edited_message_id, edited_text = telegram.edited_messages[0]
+    assert edited_chat_id == settings.telegram_allowed_chat_id
+    assert edited_message_id == outbounds[0].message_id
+    assert edited_text == "<b>💬 Reply received - First?</b>"
 
 
 async def test_skip_resumes_without_app_side_decisions(session, settings: Settings, opinions_repo: Path) -> None:
@@ -328,6 +374,34 @@ class NoopDoneAgent(OpinionAgent):
         return AgentTurnOutput(status="done", telegram_messages=[TelegramMessageSpec(text="Nothing to change.")]), None
 
 
+class EmptyMessageAddOpinionAgent(OpinionAgent):
+    async def run_turn(self, *, context: AgentReadContext, **kwargs):
+        evidence = read_jsonl(context.selected_highlights_jsonl)[0]
+        text = context.opinions_md.read_text(encoding="utf-8")
+        context.opinions_md.write_text(
+            text
+            + "\n"
+            + "- New fallback-summary opinion.\n"
+            + "  <!-- opinion-id: opinion-000003 -->\n"
+            + f"  <!-- sources: {evidence['highlight_id']} -->\n",
+            encoding="utf-8",
+        )
+        rows = read_jsonl(context.sources_jsonl)
+        rows.append(
+            {
+                "opinion_id": "opinion-000003",
+                "evidence_id": evidence["highlight_id"],
+                "document_id": evidence["document_id"],
+                "document_title": evidence["document_title"],
+                "source_url": evidence["source_url"],
+                "evidence_text": evidence["text"],
+                "added_at": evidence["highlighted_at"],
+            }
+        )
+        write_jsonl_atomic(context.sources_jsonl, rows)
+        return AgentTurnOutput(status="done", telegram_messages=[]), None
+
+
 async def test_done_without_artifact_changes_completes_without_commit_sha(
     session, settings: Settings, opinions_repo: Path
 ) -> None:
@@ -342,6 +416,21 @@ async def test_done_without_artifact_changes_completes_without_commit_sha(
     assert "Durability: no opinion file changes" in telegram.sent[-1][1].text
     final = read_json(RunPaths(settings.runs_dir).completed_run_dir(run.id) / "final.json")
     assert final["commit_sha"] is None
+
+
+async def test_done_without_agent_message_sends_fallback_completion_summary(
+    session, settings: Settings, opinions_repo: Path
+) -> None:
+    seed_corpus(settings)
+    telegram = FakeTelegramClient()
+
+    run = await start_run(session, settings, telegram, EmptyMessageAddOpinionAgent())
+
+    assert run.status == RunStatus.COMPLETED.value
+    assert "Done: 1 opinions added, 0 opinions updated, 0 opinions removed, and 1 evidence rows changed." in (
+        telegram.sent[-1][1].text
+    )
+    assert "Durability: commit " in telegram.sent[-1][1].text
 
 
 class RemoveHighestOpinionAgent(OpinionAgent):

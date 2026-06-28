@@ -84,6 +84,7 @@ async def test_sync_creates_expected_corpus_files(paths: CorpusPaths) -> None:
     assert documents[0].document_id == "reader:doc1"
     assert documents[0].tags == ["ai", "writing"]
     assert highlights[0].highlight_id == "rw:hl1"
+    assert highlights[0].evidence_kind == "highlight"
     assert highlights[0].document_title == "Example Article"
     assert highlights[0].document_summary == "Reader generated summary."
     assert highlights[0].note == "My note."
@@ -159,6 +160,7 @@ async def test_document_level_note_becomes_evidence_row(paths: CorpusPaths) -> N
 
     assert len(highlights) == 1
     assert highlights[0].highlight_id == "reader-note:note-doc"
+    assert highlights[0].evidence_kind == "document_note"
     assert highlights[0].document_id == "reader:doc1"
     assert highlights[0].text == "My note."
 

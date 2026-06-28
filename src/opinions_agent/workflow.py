@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
@@ -9,14 +10,15 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from opinions_agent.agent import AgentTurnOutput, OpinionAgent, TelegramMessageSpec, build_read_context
-from opinions_agent.config import Settings
+from opinions_agent.config import OPINION_AGENT_MODEL, Settings
 from opinions_agent.corpus import CorpusPaths, init_data_dirs, load_state, save_state
 from opinions_agent.fsio import write_text_atomic
 from opinions_agent.models import NON_TERMINAL_RUN_STATUSES, OpinionRun, RunStatus, TelegramInteraction, utcnow
+from opinions_agent.opinions_doc import load_opinions, parse_opinions, read_sources
 from opinions_agent.reader import iso_utc, parse_iso
 from opinions_agent.repo_checkout import ensure_opinions_repo, ensure_repo_file
 from opinions_agent.selection import RunPaths, finalize_run_dir, select_run_highlights, write_run_bundle
-from opinions_agent.tools.git_ops import assert_targets_clean, commit_and_push_opinions_files
+from opinions_agent.tools.git_ops import assert_targets_clean, commit_and_push_opinions_files, run_git
 from opinions_agent.validation import run_artifact_validation, update_opinion_id_high_water
 
 DEFAULT_WINDOW = timedelta(days=7)
@@ -26,6 +28,8 @@ class TelegramSender(Protocol):
     async def send_message(self, chat_id: int, spec: TelegramMessageSpec) -> int: ...
 
     async def answer_callback_query(self, callback_query_id: str, text: str | None = None) -> None: ...
+
+    async def edit_message_text(self, chat_id: int, message_id: int, text: str) -> None: ...
 
 
 class ActiveRunError(RuntimeError):
@@ -108,7 +112,7 @@ async def start_opinion_run(
         status=RunStatus.PENDING_AGENT.value,
         window_start=start,
         window_end=end,
-        model=settings.harness_model,
+        model=OPINION_AGENT_MODEL,
         attempts=0,
     )
     session.add(run)
@@ -199,6 +203,7 @@ async def _complete_done_run(
     commit_boundary_finished = False
     try:
         validation = run_artifact_validation(settings=settings, run_dir=_run_dir(run, settings))
+        fallback_summary = _completion_summary(settings)
         commit = commit_and_push_opinions_files(
             repo_dir=settings.opinions_repo_dir,
             target_files=[settings.opinions_target_file, settings.opinions_sources_file],
@@ -220,11 +225,12 @@ async def _complete_done_run(
         transition(run, RunStatus.COMPLETED)
         session.commit()
         durability = f"commit {commit.commit_sha}" if commit.commit_sha else "no opinion file changes"
+        final_messages = output.telegram_messages or [TelegramMessageSpec(text=fallback_summary)]
         final_output = AgentTurnOutput(
             status="done",
             telegram_messages=[
                 message.model_copy(update={"text": f"{message.text}\n\nDurability: {durability}"})
-                for message in output.telegram_messages
+                for message in final_messages
             ],
             notes=output.notes,
         )
@@ -245,6 +251,55 @@ async def _complete_done_run(
             ),
         )
         raise
+
+
+def _completion_summary(settings: Settings) -> str:
+    baseline_doc = parse_opinions(run_git(settings.opinions_repo_dir, "show", f"HEAD:{settings.opinions_target_file}"))
+    current_doc = load_opinions(settings.opinions_target_path)
+    baseline_by_id = {opinion.opinion_id: opinion for opinion in baseline_doc.opinions}
+    current_by_id = {opinion.opinion_id: opinion for opinion in current_doc.opinions}
+
+    added = len(set(current_by_id) - set(baseline_by_id))
+    removed = len(set(baseline_by_id) - set(current_by_id))
+    updated = sum(
+        1
+        for opinion_id in set(current_by_id) & set(baseline_by_id)
+        if current_by_id[opinion_id] != baseline_by_id[opinion_id]
+    )
+    evidence_changed = _source_row_change_count(
+        _source_rows_from_git(settings),
+        read_sources(settings.opinions_sources_path),
+    )
+    return (
+        f"Done: {added} opinions added, {updated} opinions updated, {removed} opinions removed, "
+        f"and {evidence_changed} evidence rows changed."
+    )
+
+
+def _source_rows_from_git(settings: Settings) -> list[dict[str, Any]]:
+    text = run_git(settings.opinions_repo_dir, "show", f"HEAD:{settings.opinions_sources_file}")
+    return [json.loads(line) for line in text.splitlines() if line.strip()]
+
+
+def _source_row_change_count(baseline_rows: list[dict[str, Any]], current_rows: list[dict[str, Any]]) -> int:
+    baseline_by_key = {_source_row_key(row): row for row in baseline_rows}
+    current_by_key = {_source_row_key(row): row for row in current_rows}
+    added = set(current_by_key) - set(baseline_by_key)
+    removed = set(baseline_by_key) - set(current_by_key)
+    updated = {
+        key
+        for key in set(current_by_key) & set(baseline_by_key)
+        if _canonical_source_row(current_by_key[key]) != _canonical_source_row(baseline_by_key[key])
+    }
+    return len(added) + len(removed) + len(updated)
+
+
+def _source_row_key(row: dict[str, Any]) -> tuple[str, str]:
+    return (str(row.get("opinion_id")), str(row.get("evidence_id")))
+
+
+def _canonical_source_row(row: dict[str, Any]) -> str:
+    return json.dumps(row, sort_keys=True, separators=(",", ":"))
 
 
 async def send_agent_messages(
@@ -380,22 +435,27 @@ async def _handle_callback(
     inbound.message_id = message_id
     inbound.text = data
     if not _allowed_chat(settings, chat_id):
-        await telegram.answer_callback_query(callback_id, "Not allowed")
+        await _answer_callback_query_best_effort(telegram, callback_id, "Not allowed")
         return "forbidden"
     outbound = _find_outbound_message(session, chat_id=chat_id, message_id=message_id)
     if outbound is None or outbound.opinion_run_id is None:
-        await telegram.answer_callback_query(callback_id, "This message is no longer pending")
+        await _answer_callback_query_best_effort(telegram, callback_id, "This message is no longer pending")
         return "stale"
     button_text = _button_text(outbound, data)
     if button_text is None:
-        await telegram.answer_callback_query(callback_id, "Unsupported action")
+        await _answer_callback_query_best_effort(telegram, callback_id, "Unsupported action")
         return "ignored"
     run = session.get(OpinionRun, outbound.opinion_run_id)
     if run is None or run.status != RunStatus.AWAITING_USER.value:
-        await telegram.answer_callback_query(callback_id, "This run is no longer awaiting input")
+        await _answer_callback_query_best_effort(telegram, callback_id, "This run is no longer awaiting input")
         return "stale"
     _record_response(inbound, outbound, user_action=button_text, callback_data=data)
-    await telegram.answer_callback_query(callback_id, button_text)
+    await _answer_callback_query_best_effort(telegram, callback_id, button_text)
+    await telegram.edit_message_text(
+        chat_id,
+        int(message_id),
+        _addressed_message_text(outbound.text or "", button_text),
+    )
     if _current_turn_ready(session, run):
         return await _resume_from_telegram(
             session=session,
@@ -407,6 +467,15 @@ async def _handle_callback(
             result="resumed",
         )
     return "recorded"
+
+
+async def _answer_callback_query_best_effort(
+    telegram: TelegramSender, callback_query_id: str, text: str | None = None
+) -> None:
+    try:
+        await telegram.answer_callback_query(callback_query_id, text)
+    except Exception:
+        pass
 
 
 async def _handle_message(
@@ -448,6 +517,11 @@ async def _handle_message(
     if run is None or run.status != RunStatus.AWAITING_USER.value:
         return "stale"
     _record_response(inbound, outbound, user_reply=text)
+    await telegram.edit_message_text(
+        chat_id,
+        int(reply_to),
+        _addressed_message_text(outbound.text or "", "Reply received"),
+    )
     if _current_turn_ready(session, run):
         return await _resume_from_telegram(
             session=session,
@@ -522,6 +596,34 @@ def _button_text(outbound: TelegramInteraction, callback_data: str) -> str | Non
     return None
 
 
+def _addressed_message_text(original_text: str, button_text: str) -> str:
+    lines = original_text.splitlines()
+    if not lines:
+        return _status_line(button_text)
+    first = lines[0].strip()
+    if first.startswith("<b>") and first.endswith("</b>"):
+        title = first.removeprefix("<b>").removesuffix("</b>")
+    else:
+        title = first
+    lines[0] = f"<b>{_status_label(button_text)} - {title}</b>"
+    return "\n".join(lines)
+
+
+def _status_line(button_text: str) -> str:
+    return f"<b>{_status_label(button_text)}</b>"
+
+
+def _status_label(button_text: str) -> str:
+    normalized = button_text.strip().lower()
+    if normalized == "approve":
+        return "✅ Approved"
+    if normalized == "reject":
+        return "❌ Rejected"
+    if normalized == "reply received":
+        return "💬 Reply received"
+    return f"Addressed: {button_text}"
+
+
 def _record_response(
     inbound: TelegramInteraction,
     outbound: TelegramInteraction,
@@ -590,7 +692,18 @@ def _current_turn_ready(session: Session, run: OpinionRun) -> bool:
 
 def _responses_prompt(session: Session, run: OpinionRun) -> str:
     responses = _responses_by_message(session, run)
-    blocks = ["Telegram responses received."]
+    blocks = [
+        "Telegram responses received.",
+        "",
+        "Interpretation rules:",
+        "- Approve button callbacks are approval for that proposal.",
+        "- Reject button callbacks are rejection for that proposal.",
+        "- Free-text replies are contextual feedback, not approval. They may request revision, ask for more context, "
+        "or explain rejection.",
+        "- If a free-text reply asks for changed wording or otherwise modifies a proposal, send a revised proposal "
+        "with fresh Approve and Reject buttons before making durable opinion edits.",
+        "- Never infer approval from a free-text reply.",
+    ]
     for outbound in _current_turn_outbounds(session, run):
         if not _requires_response(outbound) or outbound.message_id not in responses:
             continue

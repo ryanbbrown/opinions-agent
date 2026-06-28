@@ -24,7 +24,7 @@ The filesystem corpus is the durable, readable store of Reader-derived evidence 
 ### Requirements
 
 - CORPUS-1: `documents.jsonl` stores one normalized row per Reader parent document.
-- CORPUS-2: `highlights.jsonl` stores one normalized row per selected evidence item used by opinion runs.
+- CORPUS-2: `highlights.jsonl` stores one normalized row per Reader highlight or document-level note.
 - CORPUS-3: Reader highlight rows use stable IDs with the `rw:<reader_id>` form.
 - CORPUS-4: Reader document-level notes with non-empty `notes` text are represented as evidence rows in `highlights.jsonl` with stable IDs using the `reader-note:<reader_id>` form.
 - CORPUS-5: Highlight-attached Reader note rows are stored on their parent highlight row as note text.
@@ -34,6 +34,7 @@ The filesystem corpus is the durable, readable store of Reader-derived evidence 
 - CORPUS-9: Sync is idempotent and advances `state.json` only after corpus writes succeed.
 - CORPUS-10: `memory/` contains placeholder memory files; no automated memory-writing behavior is implemented.
 - CORPUS-11: Reader documents tagged `backfill` or `.backfill` and their descendant highlights/notes are excluded from local backtest corpora and should not be selected for opinion runs.
+- CORPUS-12: Tagged Reader documents with summaries are stored as normal document rows; summary-only evidence is synthesized into run bundles instead of being written into `highlights.jsonl`.
 
 ## Run Selection And Bundles
 
@@ -45,11 +46,12 @@ Each opinion run deterministically selects the evidence window, writes an inspec
 
 - RUN-1: `opinion-run` refuses to start when another run is in a non-terminal status.
 - RUN-2: Unless explicitly overridden, the run window starts at `state.json` `workflow.last_completed_window_end` or defaults to the previous seven days.
-- RUN-3: Evidence selection includes rows whose timestamp is `window_start <= highlighted_at < window_end`.
+- RUN-3: Evidence selection includes rows whose timestamp is `window_start <= highlighted_at < window_end`. For tagged document-summary evidence, the timestamp is the document `saved_at` time.
 - RUN-4: Selected evidence is sorted oldest-first, with stable ID tie-breaking.
 - RUN-5: A run with no selected evidence does not create a database run.
 - RUN-6: A created run writes an active run bundle under `RUNS_DIR/active/<run_id>/`.
 - RUN-7: The active run bundle contains `selected-highlights.jsonl`, `selected-documents.jsonl`, and a `review/` directory for human-readable review artifacts.
+- RUN-7A: `selected-highlights.jsonl` is the selected evidence file. It may contain Reader highlights, document-level notes, and synthesized tagged document-summary evidence with IDs using the `reader-summary:<reader_id>` form.
 - RUN-8: Human review artifacts include the run summary and initial Telegram message transcript; they are for inspection and are not part of the agent read surface.
 - RUN-9: The agent read surface includes selected run evidence files, corpus indexes, readable document content, memory files, current opinion files, opinion provenance files, and agent-maintained decision context.
 - RUN-10: Raw Reader payloads, old run directories, git internals, human review artifacts, and app state files are excluded from the default agent read surface.
@@ -75,6 +77,7 @@ An opinion run is handled as one resumable agent conversation with one bounded t
 - AGENT-6: The agent edits files directly with filesystem tools and validates durable opinion edits with the shared validation tool before reporting the approved workflow complete.
 - AGENT-7: The app must not commit artifact edits until the agent returns `done`, the same shared validator passes at the commit boundary, and commit/no-op handling succeeds.
 - AGENT-8: If the agent cannot make progress without manual intervention, it returns `blocked`; the app records a terminal blocked or failed run state, sends the explanatory Telegram message, preserves active artifacts for inspection, and does not validate or commit.
+- AGENT-9: A successful `done` run sends a final Telegram completion message after validation and commit/no-op handling. If the agent does not provide one, the app sends a deterministic fallback summary of opinion and evidence row changes.
 
 ## Proposal And Editing Workflow
 
@@ -105,10 +108,11 @@ Telegram provides human approval or revision for proposed conceptual opinion cha
 - TELEGRAM-1: The agent returns one or more Telegram messages as structured output. It will usually return one HTML approval message per conceptual proposal, but the app must allow flexible message counts and layouts. Messages that require user input must include buttons or `force_reply`; plain `awaiting_user` messages can still be advanced by exact `GO` or `SKIP`.
 - TELEGRAM-2: The app sends agent-returned Telegram messages as Telegram HTML with deterministic turn/message idempotency keys and stores the real Telegram `chat_id`, `message_id`, full text, buttons, run ID, and raw response/update details needed for idempotency and later resume context.
 - TELEGRAM-2A: Proposal messages keep the proposed opinion, section, and source article titles visible. Full evidence text and raw evidence IDs belong inside expandable evidence blocks.
+- TELEGRAM-2B: Revised proposal messages preserve the original proposal's visible number and conceptual identity. For example, a revision of `Add Opinion #2` is titled `Add Opinion #2 (Revised)`, not as a new proposal number.
 - TELEGRAM-3: Only `TELEGRAM_ALLOWED_CHAT_ID` may drive the run through callbacks, replies, or exact standalone `GO`/`SKIP` commands.
 - TELEGRAM-4: Telegram callbacks and reply messages are idempotent and scoped to the stored outbound message they reference by `(chat_id, message_id)`.
-- TELEGRAM-5: For callbacks, the app finds the stored outbound message by `(chat_id, message_id)`, verifies the callback data matches a stored button on that message, records the callback, and answers Telegram's callback query.
-- TELEGRAM-6: For replies, the app finds the stored outbound message being replied to by `(chat_id, message_id)` and records the concrete user reply.
+- TELEGRAM-5: For callbacks, the app finds the stored outbound message by `(chat_id, message_id)`, verifies the callback data matches a stored button on that message, records the callback, answers Telegram's callback query, edits the original Telegram message to show the selected status, and removes the inline keyboard so handled proposals are visually distinct.
+- TELEGRAM-6: For replies, the app finds the stored outbound message being replied to by `(chat_id, message_id)`, records the concrete user reply, edits the original Telegram message to show that a reply was received, and removes the inline keyboard so handled proposals are visually distinct. A free-text reply is contextual feedback, not approval. It may request revision, ask for more context, or explain rejection, but only an approval callback authorizes durable edits for that proposal.
 - TELEGRAM-7: Exact standalone `GO` and `SKIP` remain valid Telegram commands only from `TELEGRAM_ALLOWED_CHAT_ID` while a run is awaiting user input.
 - TELEGRAM-8: A callback or reply does not by itself resume the agent. The app records individual responses until every outbound message awaiting a user response has been answered.
 - TELEGRAM-9: When all expected responses are present, the app atomically claims the run with `awaiting_user -> running_agent` and resumes the same agent conversation with the relevant original message text/buttons plus concrete user actions/replies. If the claim fails, another request already started or completed the resume.

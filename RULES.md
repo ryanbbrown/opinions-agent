@@ -22,6 +22,14 @@ The agent cannot know endorsement directly. Its job is to propose claims that lo
 - **Taste judgments can count:** Beliefs about polish, craft, signal, quality, and what makes software or writing good are eligible opinions.
 - **Career and work-life judgments can count:** Pragmatic beliefs about jobs, leverage, learning, and useful work are eligible when they are durable rather than merely circumstantial.
 
+## Opinion Writing Fidelity
+
+When drafting an opinion from evidence, preserve the important conceptual ingredients in the source unless there is a clear reason to exclude one.
+
+Compress, synthesize, and rephrase, but do not collapse multiple meaningful concepts into a vaguer umbrella term when the opinion can naturally include them. If evidence says a durable advantage requires both proprietary distribution and faster feedback loops, do not compress that into only "distribution matters" unless there is a clear reason to drop feedback loops. Prefer a cohesive opinion that preserves both concepts.
+
+Default to a faithful, slightly fuller opinion first. Ryan can approve a shorter revision, but missing a core concept forces unnecessary back-and-forth.
+
 ## Confidence
 
 The final opinions document does not need explicit confidence labels by default.

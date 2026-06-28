@@ -4,6 +4,9 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+OPINION_AGENT_MODEL = "openai:gpt-5.5"
+OPINION_AGENT_REASONING_EFFORT = "medium"
+
 
 def load_dotenv(path: Path | str = ".env") -> None:
     env_path = Path(path)
@@ -77,7 +80,7 @@ def get_settings() -> Settings:
         telegram_allowed_chat_id=int(allowed_chat) if allowed_chat else None,
         telegram_webhook_secret=_env("TELEGRAM_WEBHOOK_SECRET"),
         readwise_token=_env("READWISE_TOKEN"),
-        harness_model=_env("HARNESS_MODEL", "openai:gpt-5.2"),
+        harness_model=OPINION_AGENT_MODEL,
         langfuse_public_key=_env("LANGFUSE_PUBLIC_KEY"),
         langfuse_secret_key=_env("LANGFUSE_SECRET_KEY"),
         langfuse_base_url=_env("LANGFUSE_BASE_URL", "https://us.cloud.langfuse.com"),
