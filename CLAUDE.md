@@ -21,4 +21,5 @@ Do not update `docs/behavior.md` for pure refactors, internal cleanup, renames, 
 - Prefer the simplest implementation that satisfies the current product intent.
 - Every implementation step must end with passing verification.
 - Write tests for behavior that would be expensive or risky to verify manually.
+- Never write tests that assert hardcoded prompt strings appear in a built prompt; they only re-state the prompt and break on wording changes. Test prompt construction behavior (which inputs are included or excluded, initial vs. resume routing), and verify prompt-content changes with sample runs or evals.
 - Run the relevant tests, typecheck, and lint before declaring work complete.

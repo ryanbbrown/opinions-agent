@@ -80,7 +80,7 @@ async def test_full_deterministic_e2e(session, settings: Settings, opinions_repo
     assert "rw:hl1" in {row["evidence_id"] for row in sources}
 
     decisions = read_jsonl(paths.decisions_jsonl)
-    assert decisions[-1]["outcome"] == "accepted"
+    assert decisions[-1]["decision"] == "approved"
 
     state = load_state(paths)
     assert state.workflow.last_completed_window_end == "2026-06-12T00:00:00+00:00"
