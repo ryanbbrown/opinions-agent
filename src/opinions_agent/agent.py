@@ -4,7 +4,7 @@ import os
 from dataclasses import dataclass
 from html import escape
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -12,9 +12,12 @@ from opinions_agent.config import OPINION_AGENT_MODEL, OPINION_AGENT_REASONING_E
 from opinions_agent.corpus import CorpusPaths
 from opinions_agent.fsio import append_jsonl, read_jsonl, write_jsonl_atomic, write_text_atomic
 from opinions_agent.opinions_doc import Opinion, OpinionsDocument, load_opinions, next_opinion_id
-from opinions_agent.prompts import build_system_prompt, build_turn_prompt
+from opinions_agent.prompts import CRITIC_PROMPT, build_system_prompt, build_turn_prompt
 from opinions_agent.tracing import make_braintrust_tracing
 from opinions_agent.validation import run_artifact_validation
+
+CRITIC_MODEL = "claude-opus-4-8"
+CRITIC_PROXY_URL = "https://api.braintrust.dev/v1/proxy"
 
 
 class TelegramButtonSpec(BaseModel):
@@ -136,6 +139,57 @@ def build_validation_tool(*, settings: Settings, run_dir: Path):
     )
 
 
+def build_critic_tool(*, settings: Settings, context: AgentReadContext, client: Any = None):
+    from thinharness import ToolResult, ToolSpec
+
+    if client is None:
+        from openai import AsyncOpenAI
+
+        client = AsyncOpenAI(base_url=CRITIC_PROXY_URL, api_key=settings.braintrust_api_key)
+
+    class CritiqueOpinionDraftArgs(BaseModel):
+        opinion_text: str
+        evidence_ids: list[str]
+
+    async def critique_opinion_draft(args: CritiqueOpinionDraftArgs) -> ToolResult:
+        try:
+            rows = {row["highlight_id"]: row for row in read_jsonl(context.selected_highlights_jsonl)}
+            blocks = []
+            for evidence_id in args.evidence_ids:
+                row = rows.get(evidence_id)
+                if row is None:
+                    blocks.append(f"- {evidence_id}: (not in this run's selected evidence)")
+                    continue
+                note = f"\n  Ryan's note: {row['note']}" if row.get("note") else ""
+                blocks.append(
+                    f"- {row.get('document_title') or 'Untitled'} "
+                    f"({row.get('evidence_kind') or 'highlight'}) — {evidence_id}\n"
+                    f"  {row.get('text') or ''}{note}"
+                )
+            prompt = CRITIC_PROMPT.format(
+                evidence="\n".join(blocks) or "(none cited)", opinion_text=args.opinion_text
+            )
+            response = await client.chat.completions.create(
+                model=CRITIC_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0,
+            )
+            critique = (response.choices[0].message.content or "").strip()
+        except Exception as exc:
+            return ToolResult(ok=False, content=str(exc))
+        return ToolResult(ok=True, content=critique)
+
+    return ToolSpec(
+        name="critique_opinion_draft",
+        description=(
+            "Independent fidelity review of one draft opinion against its cited evidence. Pass the exact proposed "
+            "opinion text and its evidence_ids; returns READY or REVISE with the specific gaps to fix."
+        ),
+        parameters=CritiqueOpinionDraftArgs,
+        handler=critique_opinion_draft,
+    )
+
+
 def build_harness_config(*, context: AgentReadContext, settings: Settings):
     from thinharness import HarnessConfig, NativeOutput
 
@@ -169,7 +223,11 @@ async def _run_harness(
     from thinharness import Harness
 
     config = build_harness_config(context=context, settings=settings)
-    result = await Harness(config, tools=[build_validation_tool(settings=settings, run_dir=context.run_dir)]).run(
+    tools = [
+        build_validation_tool(settings=settings, run_dir=context.run_dir),
+        build_critic_tool(settings=settings, context=context),
+    ]
+    result = await Harness(config, tools=tools).run(
         prompt,
         resume_from=resume_state,
     )

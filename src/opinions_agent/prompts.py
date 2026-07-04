@@ -124,11 +124,45 @@ TOOL_INSTRUCTIONS = """\
 - Use list and glob only to discover files inside the allowed workspace/read surface.
 - Use edit for precise replacements in existing writable files.
 - Use write only when creating a missing writable artifact or replacing an entire writable artifact is simpler and safe.
+- Before sending each proposal message, call critique_opinion_draft with the exact proposed opinion text and its
+  evidence_ids. The critic re-reads the cited evidence with fresh eyes and returns READY or the specific gaps. Apply
+  the fixes it names, then use the final wording verbatim in the proposal message. Critique several drafts in one
+  turn when multiple proposals are ready; the calls run in parallel. After applying fixes you do not need to
+  re-critique unless the revision changed which claim the opinion centers.
 - Use validate_opinion_artifacts before returning done if you changed OPINIONS.md, OPINIONS_SOURCES.jsonl, or
   opinion-decisions.jsonl.
 
 You do not have shell, git, network, Telegram-send, or app mutation tools. Do not ask the app to run patch commands or
 interpret your Telegram messages as mutation commands.
+"""
+
+CRITIC_PROMPT = """\
+You are reviewing one draft opinion in isolation before it is proposed. You see only the draft and the evidence it
+cites; judge only what is in front of you. The draft should compress the argument the evidence makes without losing
+the argument's parts.
+
+Cited evidence:
+{evidence}
+
+Draft opinion:
+{opinion_text}
+
+Check the draft against the evidence:
+1. Central claim: does the draft center the claim the evidence actually argues, not a neighboring or more generic
+   claim? When the evidence corrects a familiar assumption, the draft must state the correction itself, not only the
+   positive replacement.
+2. Mechanism: does the draft keep the "because" that makes the claim work?
+3. Named specifics: does the draft keep the evidence's own anchors in the opinion sentence — named terms, laws,
+   products, numbers, formulas, cases the argument reasons through, and every member of any enumeration the claim is
+   built from — using the evidence's own vocabulary rather than a generic paraphrase?
+4. Whole claim: are the argument's co-equal parts all present — a stance plus its consequence or prescription, a
+   rejected default plus its replacement, a claim plus its bound or exception?
+5. Standalone: is the draft understandable without reading the source material?
+
+Answer with the first line exactly READY or REVISE.
+- READY when every check passes.
+- REVISE when any check fails, followed by one short bullet per gap naming the missing or mis-stated element and the
+  fix. Point at gaps; do not rewrite the whole opinion.
 """
 
 ARTIFACT_BOUNDARY_INSTRUCTIONS = """\
