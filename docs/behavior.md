@@ -168,6 +168,22 @@ Approved changes become durable only after the app validates, commits, and pushe
 - GIT-5: Push failures mark the run failed and preserve the local commit for manual recovery.
 - GIT-6: Success-style final Telegram messages are sent only after validation and commit/no-op handling succeed. If validation, commit, or push fails, the app sends an app-authored operational failure message instead of agent success wording.
 
+## Evals And Observability
+
+### Purpose
+
+Opinion quality is measured by running the initial proposal phase against human-verified weekly targets in disposable sandboxes, scored and browsable in Braintrust. Braintrust is also the single external tracing destination for agent runs.
+
+### Requirements
+
+- EVAL-1: `eval/opinion_targets.jsonl` is the reviewed, checked-in source of truth for eval ground truth. The synced Braintrust dataset is a browsable copy, never the source.
+- EVAL-2: Ground truth labels every selected evidence row of an eval week as either converted (it backs a canonical target opinion) or not converted. Eval runs fail fast when the targets file no longer matches corpus selection.
+- EVAL-3: Each eval week runs independently in a disposable sample run seeded with the base opinions file plus the canonical target opinions of all earlier eval weeks, never with agent output from prior eval runs.
+- EVAL-4: Eval runs use fake Telegram, stop after the initial proposal phase, and cannot touch the real opinions repository.
+- EVAL-5: Eval scoring covers deterministic evidence conversion recall and precision, plus an LLM judge that grades generated opinions against the canonical opinion text and its source evidence. Judge calls route through the Braintrust proxy.
+- EVAL-6: Eval executions land in Braintrust as experiments. Dev and production agent runs land as logs in the same Braintrust project, stamped with an environment tag that defaults to `dev` locally and `prod` on Railway.
+- EVAL-7: Braintrust traces carry the same full capture detail as local traces: messages, tool arguments, and tool results.
+
 ## Decision History
 
 ### Purpose

@@ -13,7 +13,7 @@ from opinions_agent.corpus import CorpusPaths
 from opinions_agent.fsio import append_jsonl, read_jsonl, write_jsonl_atomic, write_text_atomic
 from opinions_agent.opinions_doc import Opinion, OpinionsDocument, load_opinions, next_opinion_id
 from opinions_agent.prompts import build_system_prompt, build_turn_prompt
-from opinions_agent.tracing import make_langfuse_tracing
+from opinions_agent.tracing import make_braintrust_tracing
 from opinions_agent.validation import run_artifact_validation
 
 
@@ -141,7 +141,7 @@ def build_harness_config(*, context: AgentReadContext, settings: Settings):
 
     read_paths = context.read_paths()
     write_paths = context.write_paths()
-    tracing = make_langfuse_tracing(settings)
+    tracing = make_braintrust_tracing(settings)
     return HarnessConfig(
         root=_common_root(read_paths + write_paths),
         model=OPINION_AGENT_MODEL,

@@ -84,7 +84,9 @@ uv run alembic upgrade head      # or: uv run opinions-agent init-db (creates ta
 
 Required local variables: `DATABASE_URL`, `READWISE_TOKEN`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_CHAT_ID`,
 `OPENAI_API_KEY`, and the `OPINIONS_*` repo settings shown in `.env.example`. The ThinHarness agent model is set in
-code to `openai:gpt-5.5` with medium reasoning effort.
+code to `openai:gpt-5.5` with medium reasoning effort. `BRAINTRUST_API_KEY` and `BRAINTRUST_PROJECT_ID` enable
+Braintrust tracing and are required for `eval run`; traces are stamped with an environment tag (`dev` locally, `prod`
+on Railway, overridable via `OPINIONS_ENVIRONMENT`).
 
 Safety default: `OPINIONS_TARGET_FILE` defaults to `TEST_OPINIONS.md` so local runs never touch the real
 `OPINIONS.md` by accident. Production (Railway) must set `OPINIONS_TARGET_FILE=OPINIONS.md` explicitly. Note that
@@ -102,6 +104,7 @@ uv run opinions-agent sample-run W04   # local disposable run against copied art
 uv run opinions-agent sample-session init review --opinions-file OPINIONS.md
 uv run opinions-agent sample-session run review W04 --send-telegram
 uv run opinions-agent sample-session poll review
+uv run opinions-agent eval run --weeks W04 W05   # Braintrust eval of the initial proposal phase
 uv run opinions-agent abandon-run ID   # abandon a stuck pending run (cursor does not advance)
 uv run opinions-agent telegram-poll    # local alternative to the webhook
 uv run opinions-agent set-telegram-webhook https://your-service.up.railway.app/telegram/webhook
@@ -177,6 +180,23 @@ developer completion gate for real ThinHarness/native-output behavior is isolate
 ```bash
 OPINIONS_RUN_REAL_E2E=1 uv run pytest tests/test_real_e2e_optional.py
 ```
+
+## Evals
+
+`eval/opinion_targets.jsonl` is the checked-in ground truth converted from `EVAL_TARGETS.md`: per eval week it lists
+canonical target opinions (ideal text, required source evidence IDs, source quotes) and the selected evidence that
+should not become opinions. `uv run opinions-agent eval run --weeks W04 ... W13` runs the initial proposal phase for
+each week in a disposable sample run (fake Telegram, no approvals, seeded with the base `OPINIONS.md` plus canonical
+targets from earlier eval weeks), parses the proposal messages, and streams a Braintrust experiment with three scores:
+`evidence_recall` and `evidence_precision` (deterministic evidence classification) and `opinion_quality` (binary LLM
+judge via the Braintrust proxy: pass only when a generated opinion contains all core concepts of the canonical one;
+extra content is fine). The targets file also syncs to the `opinion-targets` Braintrust dataset for browsing; the
+checked-in file remains the source of truth. Experiment rows are tagged with their week, and agent traces nest under
+the experiment. Flags: `--deterministic-agent` (pipeline smoke; replaces the agent's model calls, but the judge still
+calls the Braintrust proxy for weeks with targets), `--experiment`, `--max-concurrency`.
+
+`uv run opinions-agent eval rescore --from-experiment NAME` re-scores an existing experiment's stored outputs into a
+new experiment without re-running the agent — the cheap loop for judge calibration.
 
 ## Artifacts
 

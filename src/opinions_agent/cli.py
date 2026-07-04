@@ -67,6 +67,17 @@ def main(argv: list[str] | None = None) -> None:
     sample_session_poll = sample_session_subparsers.add_parser("poll")
     sample_session_poll.add_argument("name")
     sample_session_poll.add_argument("--once", action="store_true")
+    eval_parser = subparsers.add_parser("eval")
+    eval_subparsers = eval_parser.add_subparsers(dest="eval_command", required=True)
+    eval_run = eval_subparsers.add_parser("run")
+    eval_run.add_argument("--weeks", nargs="+", required=True, help="Eval week labels, such as W04 W05")
+    eval_run.add_argument("--deterministic-agent", action="store_true")
+    eval_run.add_argument("--experiment", help="Braintrust experiment name override")
+    eval_run.add_argument("--max-concurrency", type=int, default=3)
+    eval_rescore = eval_subparsers.add_parser("rescore")
+    eval_rescore.add_argument("--from-experiment", required=True, help="Existing Braintrust experiment to re-score")
+    eval_rescore.add_argument("--experiment", help="Braintrust experiment name override")
+    eval_rescore.add_argument("--max-concurrency", type=int, default=3)
     abandon = subparsers.add_parser("abandon-run")
     abandon.add_argument("run_id")
     poll = subparsers.add_parser("telegram-poll")
@@ -197,6 +208,30 @@ async def _run(args: argparse.Namespace) -> None:
             return
         if args.sample_session_command == "poll":
             await _poll(sample_settings, SampleSessionLocal, once=args.once)
+            return
+    if args.command == "eval":
+        if args.eval_command == "run":
+            from opinions_agent.evals.runner import run_opinion_eval
+
+            result = await run_opinion_eval(
+                settings,
+                args.weeks,
+                deterministic=args.deterministic_agent,
+                experiment_name=args.experiment,
+                max_concurrency=args.max_concurrency,
+            )
+            print(result.summary)
+            return
+        if args.eval_command == "rescore":
+            from opinions_agent.evals.runner import rescore_opinion_eval
+
+            result = await rescore_opinion_eval(
+                settings,
+                source_experiment=args.from_experiment,
+                experiment_name=args.experiment,
+                max_concurrency=args.max_concurrency,
+            )
+            print(result.summary)
             return
 
     with SessionLocal() as session:

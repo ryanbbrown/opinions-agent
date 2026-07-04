@@ -34,9 +34,9 @@ class Settings:
     telegram_webhook_secret: str
     readwise_token: str
     harness_model: str
-    langfuse_public_key: str
-    langfuse_secret_key: str
-    langfuse_base_url: str
+    braintrust_api_key: str
+    braintrust_project_id: str
+    environment: str
     opinions_repo_url: str
     opinions_repo_branch: str
     opinions_repo_dir: Path
@@ -50,6 +50,7 @@ class Settings:
     local_trace_dir: Path
     local_tracing_enabled: bool
     use_fake_telegram: bool
+    braintrust_parent: str = ""
 
     @property
     def opinions_target_path(self) -> Path:
@@ -81,9 +82,9 @@ def get_settings() -> Settings:
         telegram_webhook_secret=_env("TELEGRAM_WEBHOOK_SECRET"),
         readwise_token=_env("READWISE_TOKEN"),
         harness_model=OPINION_AGENT_MODEL,
-        langfuse_public_key=_env("LANGFUSE_PUBLIC_KEY"),
-        langfuse_secret_key=_env("LANGFUSE_SECRET_KEY"),
-        langfuse_base_url=_env("LANGFUSE_BASE_URL", "https://us.cloud.langfuse.com"),
+        braintrust_api_key=_env("BRAINTRUST_API_KEY"),
+        braintrust_project_id=_env("BRAINTRUST_PROJECT_ID"),
+        environment=_env("OPINIONS_ENVIRONMENT") or ("prod" if _env("RAILWAY_VOLUME_MOUNT_PATH") else "dev"),
         opinions_repo_url=_env("OPINIONS_REPO_URL", "https://github.com/ryanbbrown/ryanbbrown.git"),
         opinions_repo_branch=_env("OPINIONS_REPO_BRANCH", "main"),
         opinions_repo_dir=_default_path("OPINIONS_REPO_DIR", "/Users/ryanbrown/code/ryanbbrown", "opinions-repo"),

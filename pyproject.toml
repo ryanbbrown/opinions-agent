@@ -10,8 +10,10 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "alembic>=1.17",
+    "braintrust>=0.26.0",
     "fastapi>=0.124",
     "httpx>=0.28",
+    "openai>=2.44.0",
     "psycopg[binary]>=3.3",
     "pydantic>=2.13",
     "sqlalchemy>=2.0",
