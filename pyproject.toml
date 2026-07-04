@@ -15,7 +15,7 @@ dependencies = [
     "psycopg[binary]>=3.3",
     "pydantic>=2.13",
     "sqlalchemy>=2.0",
-    "thinharness[tracing] @ git+https://github.com/ryanbbrown/thinharness.git@d503f74a293fd3eff60dd3b15cd93f8a9e6404a9",
+    "thinharness[tracing] @ git+https://github.com/ryanbbrown/thinharness.git@v0.5.0",
     "uvicorn>=0.38",
 ]
 

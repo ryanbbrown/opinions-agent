@@ -519,7 +519,7 @@ requires-dist = [
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3" },
     { name = "pydantic", specifier = ">=2.13" },
     { name = "sqlalchemy", specifier = ">=2.0" },
-    { name = "thinharness", extras = ["tracing"], git = "https://github.com/ryanbbrown/thinharness.git?rev=d503f74a293fd3eff60dd3b15cd93f8a9e6404a9" },
+    { name = "thinharness", extras = ["tracing"], git = "https://github.com/ryanbbrown/thinharness.git?rev=v0.5.0" },
     { name = "uvicorn", specifier = ">=0.38" },
 ]
 
@@ -904,8 +904,8 @@ wheels = [
 
 [[package]]
 name = "thinharness"
-version = "0.1.0"
-source = { git = "https://github.com/ryanbbrown/thinharness.git?rev=d503f74a293fd3eff60dd3b15cd93f8a9e6404a9#d503f74a293fd3eff60dd3b15cd93f8a9e6404a9" }
+version = "0.5.0"
+source = { git = "https://github.com/ryanbbrown/thinharness.git?rev=v0.5.0#d06b84e01a6256c07e3625db0114ab817a818939" }
 dependencies = [
     { name = "httpx" },
     { name = "pydantic" },
