@@ -15,6 +15,11 @@ def test_system_prompt_treats_replies_as_feedback_not_approval() -> None:
     assert "<b>Add Opinion #2 (Revised)</b>" in prompt
     assert "include one final plain Telegram message summarizing" in prompt
     assert "instead of &apos; or &quot;" in prompt
+    assert "After any source or surrounding-context read" in prompt
+    assert "concrete example, mechanism, caveat" in prompt
+    assert "Do not collapse concrete source detail back into a generic abstraction" in prompt
+    assert "## Evidence And Workflow" in prompt
+    assert "## Telegram Message Format" in prompt
 
 
 def test_turn_prompt_separates_initial_run_context_from_resume_context(tmp_path) -> None:
