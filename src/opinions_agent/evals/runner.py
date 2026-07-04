@@ -11,7 +11,7 @@ from opinions_agent.config import OPINION_AGENT_MODEL, OPINION_AGENT_REASONING_E
 from opinions_agent.corpus import CorpusPaths
 from opinions_agent.db import init_db, make_engine, make_sessionmaker
 from opinions_agent.evals.proposals import parse_proposals
-from opinions_agent.evals.scorers import evidence_precision, evidence_recall, make_opinion_quality_scorer
+from opinions_agent.evals.scorers import evidence_precision, evidence_recall, make_opinion_judges
 from opinions_agent.evals.targets import (
     WeekCase,
     build_seed_opinions,
@@ -68,6 +68,7 @@ async def run_opinion_eval(
             parent=_current_parent(),
         )
 
+    opinion_quality, opinion_attempted = make_opinion_judges(settings)
     result = await EvalAsync(
         EVAL_PROJECT_NAME,
         project_id=settings.braintrust_project_id,
@@ -78,7 +79,7 @@ async def run_opinion_eval(
             for row in data
         ],
         task=task,
-        scores=[evidence_recall, evidence_precision, make_opinion_quality_scorer(settings)],
+        scores=[evidence_recall, evidence_precision, opinion_quality, opinion_attempted],
         experiment_name=experiment_name,
         metadata={
             "model": OPINION_AGENT_MODEL,
@@ -111,6 +112,7 @@ async def rescore_opinion_eval(
     async def task(input: dict) -> dict:
         return outputs_by_week[input["week"]]
 
+    opinion_quality, opinion_attempted = make_opinion_judges(settings)
     result = await EvalAsync(
         EVAL_PROJECT_NAME,
         project_id=settings.braintrust_project_id,
@@ -121,7 +123,7 @@ async def rescore_opinion_eval(
             for row in rows
         ],
         task=task,
-        scores=[evidence_recall, evidence_precision, make_opinion_quality_scorer(settings)],
+        scores=[evidence_recall, evidence_precision, opinion_quality, opinion_attempted],
         experiment_name=experiment_name,
         metadata={"rescored_from": source_experiment, "environment": settings.environment},
         max_concurrency=max_concurrency,

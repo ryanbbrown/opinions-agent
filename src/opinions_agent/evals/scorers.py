@@ -1,7 +1,8 @@
-"""Braintrust scorers: deterministic evidence classification plus the opinion-quality LLM judge."""
+"""Braintrust scorers: deterministic evidence classification plus the opinion LLM judges."""
 
 from __future__ import annotations
 
+import asyncio
 import html
 import json
 import re
@@ -39,6 +40,23 @@ the generated opinion fails.
 Answer with JSON only, no other text:
 {{"pass": true | false, "missing": "<core concepts missing or mis-stated, empty if none>", \
 "rationale": "<one or two sentences>"}}
+"""
+
+ATTEMPT_PROMPT = """\
+A generated opinion is being compared to a canonical opinion written from the same source evidence.
+
+Canonical opinion:
+{ideal}
+
+Generated opinion:
+{generated}
+
+Question: is the generated opinion an attempt at the same central claim as the canonical opinion — the same core
+stance about the same subject — even if it is missing supporting concepts, named examples, numbers, or caveats?
+Answer false only if it takes a genuinely different stance or centers a different claim entirely.
+
+Answer with JSON only, no other text:
+{{"same_claim": true | false, "note": "<one short sentence>"}}
 """
 
 MATCH_PROMPT = """\
@@ -92,48 +110,101 @@ def evidence_precision(input: Any, output: Any, expected: Any) -> Score:
     )
 
 
-def make_opinion_quality_scorer(settings: Settings, *, model: str = JUDGE_MODEL, client: Any = None):
-    """LLM-as-judge scorer comparing each generated opinion to its matched canonical target."""
+def make_opinion_judges(settings: Settings, *, model: str = JUDGE_MODEL, client: Any = None):
+    """Build the opinion_quality and opinion_attempted scorers, sharing one match-and-judge pass per week.
+
+    opinion_quality is the strict binary judge: a matched proposal passes only if it carries all the canonical
+    opinion's core concepts. opinion_attempted is the lenient layer beneath it: a target counts as attempted when
+    its matched proposal expresses the same central claim, even if concepts were dropped. A pass implies attempted,
+    so the lenient judge only runs on matched-but-failed targets.
+    """
     if client is None:
         from openai import AsyncOpenAI
 
         client = AsyncOpenAI(base_url=BRAINTRUST_PROXY_URL, api_key=settings.braintrust_api_key)
 
-    async def opinion_quality(input: Any, output: Any, expected: Any) -> Score:
+    evaluations: dict[str, asyncio.Task] = {}
+
+    async def _evaluate(output: Any, expected: Any) -> dict | None:
         targets = expected["targets"]
         if not targets:
-            return Score(name="opinion_quality", score=None, metadata={"reason": "no opinion targets this week"})
+            return None
         proposals = output.get("proposals", [])
         matches = await match_proposals_to_targets(proposals, targets, client=client, model=model)
         per_target = []
-        scores = []
         for target in targets:
             proposal = matches.get(target["target_id"])
             if proposal is None:
-                per_target.append({"target_id": target["target_id"], "verdict": "unmatched", "score": 0.0})
-                scores.append(0.0)
+                per_target.append(
+                    {"target_id": target["target_id"], "verdict": "unmatched", "attempted": False, "score": 0.0}
+                )
                 continue
             verdict = await _judge_pair(client, model, target, proposal)
-            score = 1.0 if verdict.get("pass") is True else 0.0
+            passed = verdict.get("pass") is True
+            attempted, attempt_note = True, None
+            if not passed:
+                attempt = await _judge_attempt(client, model, target, proposal)
+                attempted = attempt.get("same_claim") is True
+                attempt_note = attempt.get("note")
             per_target.append(
                 {
                     "target_id": target["target_id"],
                     "proposal_id": proposal.get("proposal_id"),
                     "generated": proposal.get("opinion_text"),
-                    "verdict": "pass" if score == 1.0 else "fail",
+                    "verdict": "pass" if passed else "fail",
                     "missing": verdict.get("missing"),
                     "rationale": verdict.get("rationale"),
-                    "score": score,
+                    "attempted": attempted,
+                    "attempt_note": attempt_note,
+                    "score": 1.0 if passed else 0.0,
                 }
             )
-            scores.append(score)
+        return {"targets": per_target, "unmatched_proposals": _unmatched_proposal_ids(proposals, matches)}
+
+    def _shared_evaluation(input: Any, output: Any, expected: Any) -> asyncio.Task:
+        week = next(
+            (source["week"] for source in (input, output) if isinstance(source, dict) and source.get("week")), None
+        )
+        if week is None or week not in evaluations:
+            task = asyncio.ensure_future(_evaluate(output, expected))
+            if week is None:
+                return task
+            evaluations[week] = task
+        return evaluations[week]
+
+    async def opinion_quality(input: Any, output: Any, expected: Any) -> Score:
+        evaluation = await _shared_evaluation(input, output, expected)
+        if evaluation is None:
+            return Score(name="opinion_quality", score=None, metadata={"reason": "no opinion targets this week"})
+        targets = evaluation["targets"]
         return Score(
             name="opinion_quality",
-            score=sum(scores) / len(scores),
-            metadata={"targets": per_target, "unmatched_proposals": _unmatched_proposal_ids(proposals, matches)},
+            score=sum(target["score"] for target in targets) / len(targets),
+            metadata={"targets": targets, "unmatched_proposals": evaluation["unmatched_proposals"]},
         )
 
-    return opinion_quality
+    async def opinion_attempted(input: Any, output: Any, expected: Any) -> Score:
+        evaluation = await _shared_evaluation(input, output, expected)
+        if evaluation is None:
+            return Score(name="opinion_attempted", score=None, metadata={"reason": "no opinion targets this week"})
+        targets = evaluation["targets"]
+        return Score(
+            name="opinion_attempted",
+            score=sum(1 for target in targets if target["attempted"]) / len(targets),
+            metadata={
+                "targets": [
+                    {
+                        "target_id": target["target_id"],
+                        "proposal_id": target.get("proposal_id"),
+                        "attempted": target["attempted"],
+                        "note": target.get("attempt_note"),
+                    }
+                    for target in targets
+                ]
+            },
+        )
+
+    return opinion_quality, opinion_attempted
 
 
 async def match_proposals_to_targets(
@@ -209,6 +280,12 @@ async def _judge_pair(client: Any, model: str, target: dict, proposal: dict) -> 
     evidence = "\n".join(f"- {quote['title']}: \"{quote['quote']}\"" for quote in target.get("source_quotes", []))
     generated = proposal.get("opinion_text") or _strip_tags(proposal.get("message_text") or "")
     prompt = JUDGE_PROMPT.format(ideal=target["ideal_opinion"], evidence=evidence or "(none)", generated=generated)
+    return await _judge_json(client, model, prompt)
+
+
+async def _judge_attempt(client: Any, model: str, target: dict, proposal: dict) -> dict:
+    generated = proposal.get("opinion_text") or _strip_tags(proposal.get("message_text") or "")
+    prompt = ATTEMPT_PROMPT.format(ideal=target["ideal_opinion"], generated=generated)
     return await _judge_json(client, model, prompt)
 
 

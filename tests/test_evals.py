@@ -11,7 +11,7 @@ from opinions_agent.evals.proposals import parse_proposals
 from opinions_agent.evals.scorers import (
     evidence_precision,
     evidence_recall,
-    make_opinion_quality_scorer,
+    make_opinion_judges,
     match_proposals_to_targets,
 )
 from opinions_agent.evals.targets import build_seed_opinions, load_week_cases, verify_week_partition
@@ -200,13 +200,13 @@ async def test_match_resolves_zero_overlap_with_llm():
 
 async def test_opinion_quality_scores_matched_and_unmatched_targets(settings):
     client = FakeJudgeClient([{"pass": True, "missing": "", "rationale": "All core concepts present."}])
-    scorer = make_opinion_quality_scorer(settings, client=client)
+    quality, _ = make_opinion_judges(settings, client=client)
     expected = {
         "targets": [target("W05-01", "Ideal one.", ["rw:a"]), target("W05-02", "Ideal two.", ["rw:b"])],
         "not_converted": [],
     }
     output = output_with([proposal("p1", ["rw:a"])])
-    score = await scorer(None, output, expected)
+    score = await quality(None, output, expected)
     assert score.score == pytest.approx(0.5)
     by_target = {entry["target_id"]: entry for entry in score.metadata["targets"]}
     assert by_target["W05-01"]["verdict"] == "pass"
@@ -218,25 +218,59 @@ async def test_opinion_quality_is_binary_per_target(settings):
         [
             {"pass": True, "missing": "", "rationale": "Complete."},
             {"pass": False, "missing": "Price's Law", "rationale": "Dropped the named term."},
+            {"same_claim": True, "note": "Same stance, dropped the named term."},
         ]
     )
-    scorer = make_opinion_quality_scorer(settings, client=client)
+    quality, _ = make_opinion_judges(settings, client=client)
     expected = {
         "targets": [target("W05-01", "Ideal one.", ["rw:a"]), target("W05-02", "Ideal two.", ["rw:b"])],
         "not_converted": [],
     }
     output = output_with([proposal("p1", ["rw:a"]), proposal("p2", ["rw:b"])])
-    score = await scorer(None, output, expected)
+    score = await quality(None, output, expected)
     assert score.score == pytest.approx(0.5)
     by_target = {entry["target_id"]: entry for entry in score.metadata["targets"]}
     assert by_target["W05-02"]["verdict"] == "fail"
     assert by_target["W05-02"]["missing"] == "Price's Law"
 
 
-async def test_opinion_quality_skips_weeks_without_targets(settings):
-    scorer = make_opinion_quality_scorer(settings, client=FakeJudgeClient([]))
-    score = await scorer(None, output_with([]), {"targets": [], "not_converted": []})
-    assert score.score is None
+async def test_opinion_attempted_is_lenient_and_shares_the_judge_pass(settings):
+    client = FakeJudgeClient(
+        [
+            {"pass": True, "missing": "", "rationale": "Complete."},
+            {"pass": False, "missing": "the mechanism", "rationale": "Dropped the because."},
+            {"same_claim": True, "note": "Same stance, missing the mechanism."},
+            {"pass": False, "missing": "everything", "rationale": "Talks about something else."},
+            {"same_claim": False, "note": "Centers a different claim."},
+        ]
+    )
+    quality, attempted = make_opinion_judges(settings, client=client)
+    expected = {
+        "targets": [
+            target("W05-01", "Ideal one.", ["rw:a"]),
+            target("W05-02", "Ideal two.", ["rw:b"]),
+            target("W05-03", "Ideal three.", ["rw:c"]),
+            target("W05-04", "Ideal four.", ["rw:d"]),
+        ],
+        "not_converted": [],
+    }
+    output = output_with([proposal("p1", ["rw:a"]), proposal("p2", ["rw:b"]), proposal("p3", ["rw:c"])])
+    quality_score = await quality(None, output, expected)
+    attempted_score = await attempted(None, output, expected)
+    assert quality_score.score == pytest.approx(0.25)
+    assert attempted_score.score == pytest.approx(0.5)
+    by_target = {entry["target_id"]: entry for entry in attempted_score.metadata["targets"]}
+    assert by_target["W05-01"]["attempted"] is True
+    assert by_target["W05-02"]["attempted"] is True
+    assert by_target["W05-03"]["attempted"] is False
+    assert by_target["W05-04"]["attempted"] is False
+    assert len(client.prompts) == 5
+
+
+async def test_opinion_judges_skip_weeks_without_targets(settings):
+    quality, attempted = make_opinion_judges(settings, client=FakeJudgeClient([]))
+    assert (await quality(None, output_with([]), {"targets": [], "not_converted": []})).score is None
+    assert (await attempted(None, output_with([]), {"targets": [], "not_converted": []})).score is None
 
 
 REAL_CORPUS = Path(__file__).resolve().parents[1] / ".readwise"
