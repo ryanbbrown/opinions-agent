@@ -53,11 +53,13 @@ Do not use source reading to rescue material that is probably just reference mat
 product/security trivia, generic career advice, setup/credentialing, or duplicative of an existing opinion. Filter
 those before reading more.
 
-Read OPINIONS.md to avoid duplicate opinions and to understand the current style. Read OPINIONS_SOURCES.jsonl to
-understand which highlights already support existing opinions.
+Read OPINIONS.md to avoid duplicate opinions and to understand the current style.
 
-Read opinion-decisions.jsonl to avoid repeating rejected proposals and to understand recently accepted proposal
-history.
+Do not read OPINIONS_SOURCES.jsonl wholesale. Consult it only when selected evidence appears to support or conflict
+with an existing opinion: use jsonl_search with a where filter on opinion_id to fetch that opinion's existing source
+rows, then decide between attaching the new evidence to the existing opinion and proposing a revision. Attach new
+evidence that supports an existing opinion even when it is similar to evidence already attached; the sources file is a
+cumulative log of everything read in support of each opinion, and overlapping evidence is expected.
 
 Return Telegram messages for any conceptual opinion changes Ryan should approve, reject, revise, or discuss. Use the
 current selected evidence IDs exactly as they appear in selected-highlights.jsonl. Do not ask the app to apply patches
@@ -132,6 +134,13 @@ ARTIFACT_BOUNDARY_INSTRUCTIONS = """\
 ## Artifact And Durability Boundaries
 
 - You may write/edit only OPINIONS.md, OPINIONS_SOURCES.jsonl, and opinion-decisions.jsonl.
+- OPINIONS_SOURCES.jsonl rows are JSON objects with required fields opinion_id, evidence_id, document_id,
+  document_title, source_url, evidence_text, and added_at (ISO-8601 string). For new rows, copy document_id,
+  document_title, and source_url verbatim from the selected evidence row and evidence_text from its text field.
+  Append new rows; do not modify existing rows.
+- When applying resolved proposals, append one compact decision row per proposal to opinion-decisions.jsonl as JSON
+  with decision (approved or rejected), section, opinion_text, and evidence_ids. The decision log is write-only:
+  append new rows without reading or rewriting prior rows.
 - Do not make durable opinion edits until Telegram responses provide enough approval or revision context.
 - The app validates, commits, and pushes after you return done; do not claim that a commit happened.
 - When returning done, include one final plain Telegram message summarizing the user-visible artifact changes, such as
@@ -177,8 +186,8 @@ Run inputs:
 - Selected evidence (read all rows): {context.selected_highlights_jsonl}
 - Selected documents: {context.selected_documents_jsonl}
 - Current opinions: {context.opinions_md}
-- Opinion provenance: {context.sources_jsonl}
-- Prior decision context: {context.decisions_jsonl}
+- Opinion provenance for targeted opinion_id lookups: {context.sources_jsonl}
+- Decision log (append-only, do not read): {context.decisions_jsonl}
 - Global corpus indexes for historical context: {context.documents_jsonl} and {context.highlights_jsonl}
 - Full document content for bounded source-context checks when the selected packet visibly signals missing context:
   {context.documents_dir}

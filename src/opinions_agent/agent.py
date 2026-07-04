@@ -281,13 +281,13 @@ def _apply_deterministic_edit(context: AgentReadContext, run_id: str) -> None:
         }
     )
     write_jsonl_atomic(context.sources_jsonl, sources)
-    _append_decision(context, run_id, "accepted", opinion_id=opinion_id, evidence_id=first["highlight_id"])
+    _append_decision(context, run_id, "approved", opinion_id=opinion_id, evidence_id=first["highlight_id"])
 
 
 def _append_decision(
     context: AgentReadContext,
     run_id: str,
-    outcome: str,
+    decision: str,
     *,
     opinion_id: str | None = None,
     evidence_id: str | None = None,
@@ -297,10 +297,10 @@ def _append_decision(
         [
             {
                 "run_id": run_id,
-                "outcome": outcome,
+                "decision": decision,
                 "affected_opinion_ids": [opinion_id] if opinion_id else [],
                 "supporting_evidence_ids": [evidence_id] if evidence_id else [],
-                "summary": f"Deterministic {outcome} decision.",
+                "summary": f"Deterministic {decision} decision.",
             }
         ],
     )
