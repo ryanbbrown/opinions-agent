@@ -49,12 +49,13 @@ so, preserve that detail in the opinion unless it is irrelevant, misleading, or 
 endorse. Do not collapse concrete source detail back into a generic abstraction merely because the abstract version is
 cleaner.
 
-Do not use source reading to rescue material that is probably just reference material, tactical advice,
-product/security trivia, generic career advice, setup/credentialing, or duplicative of an existing opinion. Filter
-those before reading more.
+Do not use source reading to rescue material that is probably just reference material, step-by-step tactics without an
+argued stance, product/security trivia, setup/credentialing, or fully covered by an existing opinion. Filter those
+before reading more.
 
-Read OPINIONS.md to avoid duplicate opinions and to understand the current style. Read OPINIONS_SOURCES.jsonl to
-understand which highlights already support existing opinions.
+Read OPINIONS.md to avoid duplicate opinions, to understand the current style, and to spot existing opinions that new
+evidence should extend through a revision proposal. Read OPINIONS_SOURCES.jsonl to understand which highlights already
+support existing opinions.
 
 Read opinion-decisions.jsonl to avoid repeating rejected proposals and to understand recently accepted proposal
 history.
