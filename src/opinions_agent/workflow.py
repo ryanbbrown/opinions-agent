@@ -437,6 +437,9 @@ async def _handle_callback(
     if not _allowed_chat(settings, chat_id):
         await _answer_callback_query_best_effort(telegram, callback_id, "Not allowed")
         return "forbidden"
+    if message_id is None:
+        await _answer_callback_query_best_effort(telegram, callback_id, "This message is no longer pending")
+        return "stale"
     outbound = _find_outbound_message(session, chat_id=chat_id, message_id=message_id)
     if outbound is None or outbound.opinion_run_id is None:
         await _answer_callback_query_best_effort(telegram, callback_id, "This message is no longer pending")
@@ -453,7 +456,7 @@ async def _handle_callback(
     await _answer_callback_query_best_effort(telegram, callback_id, button_text)
     await telegram.edit_message_text(
         chat_id,
-        int(message_id),
+        message_id,
         _addressed_message_text(outbound.text or "", button_text),
     )
     if _current_turn_ready(session, run):

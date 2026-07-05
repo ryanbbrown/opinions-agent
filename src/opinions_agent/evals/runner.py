@@ -11,7 +11,7 @@ from opinions_agent.config import OPINION_AGENT_MODEL, OPINION_AGENT_REASONING_E
 from opinions_agent.corpus import CorpusPaths
 from opinions_agent.db import init_db, make_engine, make_sessionmaker
 from opinions_agent.evals.proposals import parse_proposals
-from opinions_agent.evals.scorers import evidence_precision, evidence_recall, make_opinion_judges
+from opinions_agent.evals.scorers import evidence_precision, evidence_recall, make_opinion_judges, opinion_brevity
 from opinions_agent.evals.targets import (
     WeekCase,
     build_seed_opinions,
@@ -29,17 +29,29 @@ from opinions_agent.workflow import start_opinion_run
 EVAL_PROJECT_NAME = "opinions-agent"
 TARGETS_DATASET_NAME = "opinion-targets"
 
+# Marks which targets/judges/scorers graded an experiment: scores are comparable only within
+# one value. Bump on any change that alters existing scores (target text, judge prompt or
+# model, scorer code); adding a new metric is not a bump — shared metrics stay comparable.
+# Always a "<YYYY-MM-DD>-<what-changed>" slug; the date prefix names rescore experiments.
+SCORING_VERSION = "2026-07-05-plain-language"
+
 
 async def run_opinion_eval(
     settings: Settings,
     weeks: list[str],
     *,
     deterministic: bool = False,
+    variant: str | None = None,
+    run: int = 1,
     experiment_name: str | None = None,
     max_concurrency: int = 3,
 ):
     if not settings.braintrust_api_key or not settings.braintrust_project_id:
         raise ValueError("BRAINTRUST_API_KEY and BRAINTRUST_PROJECT_ID are required to run evals")
+    if variant and experiment_name:
+        raise ValueError("pass either variant or experiment_name, not both")
+    if variant:
+        experiment_name = f"{variant}-r{run}"
     from braintrust import EvalAsync, EvalCase
 
     cases = load_week_cases()
@@ -79,7 +91,7 @@ async def run_opinion_eval(
             for row in data
         ],
         task=task,
-        scores=[evidence_recall, evidence_precision, opinion_quality, opinion_attempted],
+        scores=[evidence_recall, evidence_precision, opinion_brevity, opinion_quality, opinion_attempted],
         experiment_name=experiment_name,
         metadata={
             "model": OPINION_AGENT_MODEL,
@@ -87,6 +99,7 @@ async def run_opinion_eval(
             "environment": settings.environment,
             "agent": "deterministic" if deterministic else "thinharness",
             "weeks": [case.week for case in selected_cases],
+            **({"variant": variant, "run": run, "scoring_version": SCORING_VERSION} if variant else {}),
         },
         max_concurrency=max_concurrency,
     )
@@ -101,12 +114,34 @@ async def rescore_opinion_eval(
     experiment_name: str | None = None,
     max_concurrency: int = 3,
 ):
-    """Re-score stored outputs from an existing experiment into a new experiment, without re-running the agent."""
+    """Re-judge stored outputs from an existing experiment against the current targets, without re-running the agent.
+
+    Brings the source's outputs into the current SCORING_VERSION cohort: expected is rebuilt from the
+    live targets file (never the stale expected stored on the source rows), and the new experiment is
+    named `<variant>-r<run>-rs-<scoring date>` from the source's metadata.
+    """
     if not settings.braintrust_api_key or not settings.braintrust_project_id:
         raise ValueError("BRAINTRUST_API_KEY and BRAINTRUST_PROJECT_ID are required to run evals")
     from braintrust import EvalAsync, EvalCase
 
+    source = _get_experiment(settings, source_experiment)
+    source_meta = source.get("metadata") or {}
+    variant, run = source_meta.get("variant"), source_meta.get("run")
+    if experiment_name is None:
+        if not variant or not run:
+            raise ValueError(
+                f"source experiment {source_experiment} has no variant/run metadata; pass an explicit experiment name"
+            )
+        experiment_name = f"{variant}-r{run}-rs-{SCORING_VERSION[:10]}"
+
     rows = _fetch_experiment_rows(settings, source_experiment)
+    cases = {case.week: case for case in load_week_cases()}
+    for row in rows:
+        case = cases[row["input"]["week"]]
+        row["expected"] = {
+            "targets": [target.model_dump(mode="json") for target in case.targets],
+            "not_converted": [evidence.model_dump(mode="json") for evidence in case.not_converted],
+        }
     outputs_by_week = {row["input"]["week"]: row["output"] for row in rows}
 
     async def task(input: dict) -> dict:
@@ -123,12 +158,33 @@ async def rescore_opinion_eval(
             for row in rows
         ],
         task=task,
-        scores=[evidence_recall, evidence_precision, opinion_quality, opinion_attempted],
+        scores=[evidence_recall, evidence_precision, opinion_brevity, opinion_quality, opinion_attempted],
         experiment_name=experiment_name,
-        metadata={"rescored_from": source_experiment, "environment": settings.environment},
+        metadata={
+            "rescored_from": source_experiment,
+            "environment": settings.environment,
+            "scoring_version": SCORING_VERSION,
+            **({"variant": variant, "run": run} if variant and run else {}),
+        },
         max_concurrency=max_concurrency,
     )
     return result
+
+
+def _get_experiment(settings: Settings, experiment_name: str) -> dict:
+    import httpx
+
+    listing = httpx.get(
+        "https://api.braintrust.dev/v1/experiment",
+        params={"project_id": settings.braintrust_project_id, "experiment_name": experiment_name},
+        headers={"Authorization": f"Bearer {settings.braintrust_api_key}"},
+        timeout=30,
+    )
+    listing.raise_for_status()
+    experiments = [obj for obj in listing.json()["objects"] if obj["name"] == experiment_name]
+    if not experiments:
+        raise ValueError(f"experiment not found in Braintrust project: {experiment_name}")
+    return experiments[0]
 
 
 def _fetch_experiment_rows(settings: Settings, experiment_name: str) -> list[dict]:
@@ -138,18 +194,9 @@ def _fetch_experiment_rows(settings: Settings, experiment_name: str) -> list[dic
     import httpx
 
     headers = {"Authorization": f"Bearer {settings.braintrust_api_key}"}
-    listing = httpx.get(
-        "https://api.braintrust.dev/v1/experiment",
-        params={"project_id": settings.braintrust_project_id, "experiment_name": experiment_name},
-        headers=headers,
-        timeout=30,
-    )
-    listing.raise_for_status()
-    experiments = [obj for obj in listing.json()["objects"] if obj["name"] == experiment_name]
-    if not experiments:
-        raise ValueError(f"experiment not found in Braintrust project: {experiment_name}")
+    experiment = _get_experiment(settings, experiment_name)
     fetch = httpx.post(
-        f"https://api.braintrust.dev/v1/experiment/{experiments[0]['id']}/fetch",
+        f"https://api.braintrust.dev/v1/experiment/{experiment['id']}/fetch",
         headers=headers,
         json={"limit": 1000},
         timeout=120,

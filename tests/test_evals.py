@@ -13,6 +13,7 @@ from opinions_agent.evals.scorers import (
     evidence_recall,
     make_opinion_judges,
     match_proposals_to_targets,
+    opinion_brevity,
 )
 from opinions_agent.evals.targets import build_seed_opinions, load_week_cases, verify_week_partition
 from opinions_agent.opinions_doc import parse_opinions
@@ -168,6 +169,28 @@ def test_evidence_precision_ignores_citations_outside_week_universe():
 def test_evidence_precision_perfect_when_nothing_cited():
     expected = {"targets": [], "not_converted": [{"evidence_id": "rw:x", "title": "T", "evidence_kind": "highlight"}]}
     assert evidence_precision(None, output_with([]), expected).score == 1.0
+
+
+def test_opinion_brevity_penalizes_proposals_longer_than_golden():
+    expected = {"targets": [target("W05-01", "one two three four", ["rw:a"])], "not_converted": []}
+    output = output_with([proposal("p1", ["rw:a"], text="one two three four five six seven eight")])
+    score = opinion_brevity(None, output, expected)
+    assert score.score == 0.5
+    assert score.metadata == {"proposal_mean_words": 8, "target_mean_words": 4}
+
+
+def test_opinion_brevity_caps_at_one_below_golden_length():
+    # Under-writing is opinion_quality's problem; brevity only measures overshoot.
+    expected = {"targets": [target("W05-01", "one two three four five six", ["rw:a"])], "not_converted": []}
+    output = output_with([proposal("p1", ["rw:a"], text="one two three")])
+    assert opinion_brevity(None, output, expected).score == 1.0
+
+
+def test_opinion_brevity_skips_weeks_without_targets_or_proposals():
+    no_targets = {"targets": [], "not_converted": []}
+    assert opinion_brevity(None, output_with([proposal("p1", ["rw:a"])]), no_targets).score is None
+    with_targets = {"targets": [target("W05-01", "one two", ["rw:a"])], "not_converted": []}
+    assert opinion_brevity(None, output_with([]), with_targets).score is None
 
 
 async def test_match_by_evidence_overlap_does_not_call_llm():

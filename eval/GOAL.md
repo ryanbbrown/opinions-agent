@@ -10,11 +10,13 @@ Read `eval/experiments.md` before every experiment so you build on prior results
 
 ## Metrics
 
-The eval runs the initial proposal phase for each eval week and produces three scores (see `src/opinions_agent/evals/scorers.py`):
+The eval runs the initial proposal phase for each eval week and produces five scores (see `src/opinions_agent/evals/scorers.py`):
 
 - `opinion_quality` — **primary.** Binary LLM judge: a generated opinion passes only if it carries all core concepts of the canonical one; extra content is fine. Averaged across weeks that have targets.
+- `opinion_attempted` — diagnostic funnel layer beneath quality: a target counts as attempted when its matched proposal expresses the same central claim, even if concepts were dropped. Separates "wrong claims proposed" from "right claims written incompletely".
 - `evidence_recall` — guardrail. Fraction of ground-truth-converted evidence the proposals cited.
 - `evidence_precision` — guardrail. Fraction of cited in-week evidence that ground truth also converts.
+- `opinion_brevity` — reference. Mean proposal length vs the week's mean golden-target length: 1.0 at or below the golden length, lower when longer (0.5 = twice as long). Not a gate, but the golden set averages ~34 words and bloat past that register is a cost — prefer variants that hold quality at higher brevity.
 
 Weeks in scope: `W04 W05 W06 W07 W08 W10 W11 W12 W13`. W07 has no target opinions, so it only exercises precision — expect `opinion_quality` and `evidence_recall` to be null there.
 
@@ -58,8 +60,9 @@ A variant that meaningfully simplifies the prompts while holding all scores with
 ## Reading results
 
 - Each run prints its Braintrust experiment URL — open it for aggregate scores, per-row drill-down, and full traces.
+- In the Braintrust experiments table, filter `metadata.scoring_version = '<current version>'` to see only score-comparable experiments, and group by `metadata.variant` for pooled per-variant scores. `eval rescore` brings an older experiment's stored outputs into the current scoring version (re-judged against the live targets, named `<variant>-r<N>-rs-<date>`).
 - For the loop, `uv run python eval/inspect_experiment.py <run> [<run2> ...] [--vs <baseline-run> ...]` pools replicate runs of one variant — pooled means, per-run spread, per-target pass counts with the judge's missing-concept notes — and diffs them against pooled baseline runs. It reads verdicts already stored on the runs, so it never re-runs the judge.
-- Do not budget off Braintrust's `estimated_cost`: it prices every input token at full rate and ignores OpenAI's automatic prompt caching (thinharness discards the `cached_tokens` detail), so it reads ~1.8x high. A full 9-week run is ~$5.
+- Braintrust's `estimated_cost` is accurate for runs made with thinharness ≥ 0.5.1 (bumped 2026-07-05). Experiments recorded before that ignore OpenAI's prompt caching and read ~1.8x high — a full 9-week run shown as ~$10 actually cost ~$5.
 
 ## Experiment protocol
 
@@ -77,15 +80,15 @@ The current best starts as `main` (the committed eval harness with unmodified pr
 3. In the worktree, edit `prompts.py` and/or `RULES.md` for the hypothesis, respecting the anti-leakage rules.
 4. From the main checkout, run the leakage tripwire: `uv run python eval/check_leakage.py .worktrees/<exp>`. It flags word n-grams newly added to the lever files (relative to main) that also appear in the test set. Review every hit and generalize any real leak before proceeding. It only catches verbatim and near-verbatim leaks, so the anti-leakage rules above still apply in full.
 5. Commit the change to the experiment's own branch — never main: `git -C .worktrees/<exp> commit -am "exp/<exp>: <hypothesis>"`. Committing is what lets a later experiment build on this one.
-6. Run the eval from the worktree, pointing at the shared corpus (the gitignored `.readwise` lives only in the main checkout) and naming the experiment:
+6. Run the eval from the worktree, pointing at the shared corpus (the gitignored `.readwise` lives only in the main checkout) and naming the variant:
    ```
    OPINIONS_DATA_DIR=/Users/ryanbrown/code/opinions-agent/.readwise \
    uv run --directory .worktrees/<exp> opinions-agent eval run \
      --weeks W04 W05 W06 W07 W08 W10 W11 W12 W13 \
-     --experiment <exp>
+     --variant <exp>
    ```
-   Runs dir, sqlite DB, seeded `OPINIONS.md`, `RULES.md`, and targets all resolve inside the worktree.
-7. Read the scores with `eval/inspect_experiment.py` (see Reading results), then apply the screen→replicate rule from Validity and promotion. Replication reruns reuse the same worktree with a `-run2`/`-run3` experiment suffix.
+   The experiment is named `<exp>-r1` and stamped with `variant`, `run`, and `scoring_version` metadata (`scoring_version` is the runner's pinned constant marking which targets/judges graded the run — experiments are score-comparable only within the same value). Runs dir, sqlite DB, seeded `OPINIONS.md`, `RULES.md`, and targets all resolve inside the worktree.
+7. Read the scores with `eval/inspect_experiment.py` (see Reading results), then apply the screen→replicate rule from Validity and promotion. Replication reruns reuse the same worktree with `--run 2`/`--run 3` (naming the experiments `<exp>-r2`/`-r3`).
 8. Append a result entry to the main checkout's `eval/experiments.md`, never the worktree copy. Use the format that file documents.
 9. If the variant is a confirmed winner, promote it by pointing **Current best** in the ledger at `exp/<exp>` and updating **Score to beat** to the variant's replicate mean; the next experiment branches from there. Nothing merges into main. Otherwise keep the branch and worktree for reference and deprioritize the variant — never delete non-winners, since a dead end still records what not to retry.
 10. Continue until the stop criterion.

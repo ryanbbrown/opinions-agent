@@ -110,6 +110,29 @@ def evidence_precision(input: Any, output: Any, expected: Any) -> Score:
     )
 
 
+def opinion_brevity(input: Any, output: Any, expected: Any) -> Score:
+    """Mean proposal length vs the week's mean target length: 1.0 at or below the golden length, lower when longer.
+
+    A reference metric, not a gate — opinion_quality already guards under-writing, so shorter than golden caps at 1.0.
+    """
+    targets = expected["targets"]
+    if not targets:
+        return Score(name="opinion_brevity", score=None, metadata={"reason": "no opinion targets this week"})
+    proposal_words = [
+        len((proposal.get("opinion_text") or _strip_tags(proposal.get("message_text") or "")).split())
+        for proposal in output.get("proposals", [])
+    ]
+    if not proposal_words or not sum(proposal_words):
+        return Score(name="opinion_brevity", score=None, metadata={"reason": "no proposal text"})
+    target_mean = sum(len(target["ideal_opinion"].split()) for target in targets) / len(targets)
+    proposal_mean = sum(proposal_words) / len(proposal_words)
+    return Score(
+        name="opinion_brevity",
+        score=min(1.0, target_mean / proposal_mean),
+        metadata={"proposal_mean_words": round(proposal_mean, 1), "target_mean_words": round(target_mean, 1)},
+    )
+
+
 def make_opinion_judges(settings: Settings, *, model: str = JUDGE_MODEL, client: Any = None):
     """Build the opinion_quality and opinion_attempted scorers, sharing one match-and-judge pass per week.
 

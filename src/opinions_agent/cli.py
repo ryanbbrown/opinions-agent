@@ -72,11 +72,13 @@ def main(argv: list[str] | None = None) -> None:
     eval_run = eval_subparsers.add_parser("run")
     eval_run.add_argument("--weeks", nargs="+", required=True, help="Eval week labels, such as W04 W05")
     eval_run.add_argument("--deterministic-agent", action="store_true")
-    eval_run.add_argument("--experiment", help="Braintrust experiment name override")
+    eval_run.add_argument("--variant", help="Variant name; the run is named <variant>-r<run> with cohort metadata")
+    eval_run.add_argument("--run", type=int, default=1, help="Replicate number within the variant")
+    eval_run.add_argument("--experiment", help="Ad-hoc Braintrust experiment name (smoke runs; no cohort metadata)")
     eval_run.add_argument("--max-concurrency", type=int, default=3)
     eval_rescore = eval_subparsers.add_parser("rescore")
     eval_rescore.add_argument("--from-experiment", required=True, help="Existing Braintrust experiment to re-score")
-    eval_rescore.add_argument("--experiment", help="Braintrust experiment name override")
+    eval_rescore.add_argument("--experiment", help="Name override; defaults to <variant>-r<run>-rs-<scoring date>")
     eval_rescore.add_argument("--max-concurrency", type=int, default=3)
     abandon = subparsers.add_parser("abandon-run")
     abandon.add_argument("run_id")
@@ -217,6 +219,8 @@ async def _run(args: argparse.Namespace) -> None:
                 settings,
                 args.weeks,
                 deterministic=args.deterministic_agent,
+                variant=args.variant,
+                run=args.run,
                 experiment_name=args.experiment,
                 max_concurrency=args.max_concurrency,
             )
