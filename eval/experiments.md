@@ -173,3 +173,33 @@ Each entry records:
 - **Mechanism 2 — the audience effect.** Pre-critic drafts average 44.4–47.7 words across all four runs — fuller than anchor-examples' *final* opinions (41.6–44.8) under identical writing rules. Even with zero revisions the counterfactual pool {0.877, 0.623, 0.675, 0.790} means 0.741, still above anchor-examples' 0.677. The only prompt difference is the critique tool-use instruction itself: drafting for an omission-auditor produces fuller drafts. Most of critic-2's extra length (~6 of ~8 words over anchor-examples) comes from this drafting shift, not from revisions.
 - **Caveats:** counterfactual verdicts were judged in a different session than the finals (~3–6pt judge-session drift on borderline cases); n=4 runs; pool sizes small. The draft-length shift is consistent across all four runs, which is mechanical evidence independent of judge noise.
 - **Implications:** (a) "The critic isn't doing much" was wrong in a specific way — its revisions are modest (+0.04) but its presence restructures drafting, and the two together are the +0.10 over keep-the-list; (b) a critic-less variant (e.g. slot-structure) cannot be expected to replicate 0.78 by copying the writing rules, because the edge is the audit step plus the audience effect, not the wording; (c) slot-grammar RULES.md on top of exp/critic-2 is a composable candidate (grammar shapes the draft, critic audits it); (d) for best-of-N, selection plays the same audit role as the critic — the design should preserve the audience effect by telling the agent its drafts will be judged for slot-completeness.
+
+### slot-critic
+
+- **Hypothesis:** Combine the slot-structure RULES.md grammar with the promoted omission-only critic: the slot grammar should shape the first draft around stance / engine / payoff, while the critic preserves critic-2's audit/audience effect. Performance-first screen; brevity recorded only.
+- **Changed:** RULES.md fidelity section only — replaced the five critic-2 fidelity bullets with slot-structure's stance / engine / payoff grammar. Branched from `exp/critic-2` and kept critic-2's `prompts.py` critic instruction.
+- **Scores:** opinion_quality **0.721** (vs 0.780 score to beat; screen fail). opinion_attempted 0.950. evidence_recall 1.000. evidence_precision 0.520 (same as critic-2's 0.521). opinion_brevity 0.739 (better than critic-2's 0.695). Single run, stopped per protocol.
+- **Verdict:** Not promoted; below the current best by 0.059, so no replicates. The brevity gain does not matter under the performance-first sequencing because quality regressed.
+- **Learned:** Slot grammar plus critic improved some critic-2 flaky targets (W08-01/02/03/04, W10-03, W11-01/04, W12-03) and kept precision flat, but it broke a block of formerly high-rate targets (W04-01/02/04, W05-04, W10-02, W13-02/04). The grammar bounded length, but did not preserve critic-2's quality floor; the old explicit fidelity bullets remain load-bearing when paired with the critic.
+
+### best-of-n
+
+- **Hypothesis:** Pure prompt best-of-N: before each proposal, draft three candidate phrasings, compare them for load-bearing slots, choose the most complete candidate, then send that candidate through the existing omission-only critic. This should attack per-draft omission variance without changing the harness.
+- **Changed:** prompts.py tool-use instruction only — added three-candidate drafting and self-selection before the existing critique call. Completeness is the selector; directness is only the tie-break for candidates carrying the same slots.
+- **Scores:** opinion_quality **0.621** (vs 0.780 score to beat; screen fail). opinion_attempted 0.969. evidence_recall 0.979. evidence_precision 0.523. opinion_brevity 0.750. Cost/runtime similar to critic-2 (~11.2 tool calls/week, ~$0.59). Single run, stopped per protocol.
+- **Verdict:** Not promoted; substantially below the current best.
+- **Learned:** The self-selection prompt bought shorter opinions but lost load-bearing concepts: W05-02, W05-04, W06-04, W13-01, and several 3/4 critic-2 targets regressed to 0/1. This looks like same-context candidate comparison becoming implicit brevity/directness pressure, not reliable quality search. If best-of-N is revisited, selection likely needs a stronger external check than "compare candidates yourself."
+
+### best-of-n-critic
+
+- **Hypothesis:** Strengthen best-of-N without touching the harness by using the existing omission-only critic as the selector: draft three candidates, critique all three in parallel, choose READY over revised or the candidate with the fewest omissions, then fold in flagged concepts. This should approximate host-side selection while staying inside prompts.py.
+- **Changed:** prompts.py critique instruction rewritten so each proposal generates three candidate phrasings and calls `critique_opinion_draft` on all three before choosing the candidate to send.
+- **Scores:** opinion_quality **0.702** (vs 0.780 score to beat; screen fail). opinion_attempted 0.969. evidence_recall 0.979. evidence_precision 0.510. opinion_brevity 0.782. Cost/runtime increased materially: ~19.1 tool calls/week, 175k tokens/week, ~$0.75, 134s/week. Single run, stopped per protocol.
+- **Verdict:** Not promoted; below current best and much more expensive.
+- **Learned:** External candidate criticism recovered quality versus self-selection (0.702 vs 0.621) and produced the shortest screened variant, but still underperformed critic-2 by 0.078 while adding substantial tool cost. The regressions are concentrated in concept-rich targets (W04-01/02/04, W05-02/04, W06-01, W08-03, W10-03, W13-01). The pattern supports the sequencing note: prompt-level selection variants are acting like compression pressure. A true host-side selector may still be different, but it requires an explicit harness change outside the current prompt-only edit scope.
+
+### performance-first round stop
+
+- **What:** Three consecutive performance screens after the critic-2 promotion failed to beat the 0.780 current best: slot-critic 0.721, best-of-n 0.621, best-of-n-critic 0.702. None qualified for replication.
+- **Read:** All three improved `opinion_brevity` (0.739 / 0.750 / 0.782 vs critic-2's 0.695) while losing quality. That confirms the user-stated sequencing: brevity should be recorded during performance work and used only as a within-noise tie-break; optimizing it through prompt pressure or prompt-level selection still pays quality.
+- **Next:** Current best remains `exp/critic-2`. Further performance work needs a new lever, likely a user-approved host-side selector tool or a separate matching/coverage experiment for unmatched update targets such as W13-05; neither should be smuggled into the prompt-only loop.
