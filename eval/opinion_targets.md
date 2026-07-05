@@ -6,6 +6,8 @@
 
 As AI commoditizes execution, the bottleneck moves to high-quality intent: having ideas worth pursuing, articulating what good looks like, and turning that intent into criteria that agents and organizations can optimize toward.
 
+*Revised: The scarce skill in AI work is no longer coding or prompting but high-quality intent: the quality of the idea comes first, and next comes the ability to articulate it as the actual goal — ideally as measurable criteria — and orient the company or agents around it.*
+
 **Sources**
 - The Most Important Ideas in AI Right Now: "The new scarce skill isn't coding or prompting—it's being able to say what you actually want. And it has to be high-quality intent. The quality of the idea is always the most important thing. But the second most important is the ability to articulate it, define it as your actual goal, and orient the entire company around it."
 - Nobody is Talking About Generalized Hill-Climbing (at Runtime): "The author proposes a new way to improve AI by clearly defining and testing an \"Ideal State\" for any task, making progress measurable and verifiable."
@@ -14,12 +16,16 @@ As AI commoditizes execution, the bottleneck moves to high-quality intent: havin
 
 Captured expertise is a one-way ratchet: once tacit know-how becomes skills, SOPs, context files, or open-source examples, AI can reuse it everywhere, so advantages based only on undocumented expert memory will erode.
 
+*Revised: Expertise is dispersing from experts' heads into skills, SOPs, context files, and open-source projects, and once captured it never comes back out; advantages based only on undocumented expert memory will erode as AI reuses what gets captured.*
+
 **Sources**
 - The Most Important Ideas in AI Right Now: "There's an articulation gap between what experts know and what's written down. Most expertise lives in people's heads. Cliff, the 62-year-old who knows how everything works but never documented any of it. When Cliff retires, that knowledge dies with him. What's happening now is that expertise is dispersing from brains into skills, SOPs, context files, open source projects. And once it's captured it never comes back out."
 
 ### W04 opinion 3
 
 Generalist base models are likely to beat domain-specific base models because reasoning gains compound across fields; specialization should usually live in tools, data, skills, and harnesses unless scaling hits physical limits.
+
+*Revised: Generalist base models are likely to beat domain-specific base models because intelligence from different fields builds on itself; domain-specific models mainly make sense if physical scaling limits force a split into cooperating specialist models.*
 
 **Sources**
 - Why domain specific LLMs won't exist: an intuition: "Domain-specific large language models (LLMs) do not outperform general LLMs because intelligence from different fields builds on each other. General models learn from many areas, making them smarter overall."
@@ -74,6 +80,8 @@ AI does not need to beat an idealized version of knowledge work; in many compani
 
 If AI displaces work, the problem is not only lost income; work currently supplies agency, contribution, mastery, and connection, so post-work institutions need to replace those functions rather than merely give people leisure.
 
+*Revised: People do not need work specifically; they need four things work happens to provide — agency, contribution, mastery, and connection — so if AI displaces work, whatever comes after has to supply those four functions, not just income.*
+
 **Sources**
 - The Displacement of Cognitive Labor and What Comes After: "What people actually seem to need is not work specifically but four things that work happens to provide: agency (the sense that you're making choices that matter), contribution (the sense that you're valued by others), mastery (the sense that you're getting better at something), and connection (belonging to something larger than yourself)."
 
@@ -109,6 +117,8 @@ Engineering interviews in an AI-native world should test how candidates scope, b
 
 The current AI slop era may be a temporary golden age for human-AI work: models create useful rough output at volume, while humans still add the judgment, taste, and context that make the work satisfying; if AI later owns more of that judgment, taste, and context, this window may close.
 
+*Revised: The current AI slop era may be a golden age for human-AI work: models create useful slop at volume, humans are still needed to desloppify it, and that combination gives real leverage while keeping the work fun; if AI eventually displaces people or takes over the more interesting work, this moment may fade.*
+
 **Sources**
 - Random thoughts while gazing at the misty AI Frontier: "We are likely in the golden era of AI + humanity. Before the last few years, AI was inaccessible, not very generalizable, and could only do specific tasks. In the future, AI may become superhuman at most tasks and take over a lot of work some people find fun. Today, AI creates useful slop at volume, which means humans are still needed to desloppify the slop, but the slop provides real leverage on time and jobs, which means it is fun to be working right now. If AI displaces people eventually or does more interesting work, this golden moment may fade or change."
 
@@ -130,6 +140,8 @@ The current AI slop era may be a temporary golden age for human-AI work: models 
 ### W08 opinion 1
 
 In AI-assisted creative work, the default output is a floor, not a result; taste means knowing what to reject and overriding generic hooks, structure, and visual defaults before shipping.
+
+*Revised: In AI-assisted creative work, taste is not just knowing what you want but knowing what to reject: the default output is almost always generic, so have an opinion about the defaults — starting with the hook — and be willing to override them.*
 
 **Sources**
 - Everyone using AI has about 12 months to develop these 3 moats: "you get a content draft from Claude and rewrite the first two sentences because the AI opened with something generic, even though the rest is solid. the hook is everything and the default hook is almost always wrong."
@@ -271,6 +283,8 @@ Agentic throughput is capped by human review bandwidth, not by how many workers 
 
 The goal of agentic work is not maximum delegation; use agents to remove routine work, but stay deliberately in the loop where taste develops and original work needs your fingerprints rather than just your approval.
 
+*Revised: Push most agentic work to background supervision, since routine work does not benefit from synchronous involvement, but stay deeply, deliberately in the loop for the work where taste develops and original work happens — the kind that needs your fingerprints, not just your approval.*
+
 **Sources**
 - Escape from agentic loop: "Some of the day I want to be deeply, deliberately in the loop, because that is where taste develops and where original work happens - the kind that has my fingerprints on it, not just my approval."
 
@@ -284,6 +298,8 @@ The goal of agentic work is not maximum delegation; use agents to remove routine
 ### W13 opinion 1
 
 A good vertical agent is a faithful compression of its task distribution: the Shortcut Excel-agent example shows why common capabilities belong in fast prompt context, rarer capabilities belong in discoverable tiers, and complete underlying references should remain searchable for rare cases the curated layers do not cover.
+
+*Revised: A good vertical agent is a faithful compression of its task distribution: common capabilities belong in fast, always-loaded prompt context, rarer capabilities belong in discoverable tiers, and complete underlying references should remain searchable for the rare cases the curated layers do not cover.*
 
 **Sources**
 - Building a Good Vertical Agent: "I've spent almost a year now building the Shortcut agent, which is widely considered the most accurate spreadsheet agent around"
@@ -311,6 +327,8 @@ Building new software is learning under uncertainty; the right move is to expose
 ### W13 opinion 4
 
 Anything you can put on a public leaderboard is already on its way to commodity, because models can train against measurable benchmarks; durable capability work moves toward private, messy, user-specific edge cases.
+
+*Revised: Anything you can put on a leaderboard you can train against, so anything measurable is already on its way to commodity; durable value moves toward complex, private work that cannot be easily measured or copied.*
 
 **Sources**
 - The Untrainable: "anything you can put on a leaderboard, you can train against, so anything measurable is already on its way to commodity."
