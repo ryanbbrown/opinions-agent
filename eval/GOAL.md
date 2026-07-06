@@ -2,11 +2,11 @@
 
 ## Objective
 
-Improve the opinion agent's prompts to raise its Braintrust eval scores, primarily `opinion_quality`, without regressing evidence classification. The only levers are `src/opinions_agent/prompts.py` and `RULES.md`. Run experiments as isolated variants, compare them in Braintrust, log every result, and advance the current best only when a variant clearly and repeatably beats it.
+Improve the opinion agent's Braintrust eval scores, primarily `opinion_quality`, without regressing evidence classification. Prompt and rule edits are the default levers, but critic-tool or harness changes are allowed when the hypothesis is explicitly about critic behavior, critic context, proposal routing, or coverage. Run experiments as isolated variants, compare them in Braintrust, log every result, and advance the current best only when a variant clearly and repeatably beats it.
 
-Target: lift mean `opinion_quality` from the 0.374 baseline to **0.70+**. That is a large gap, so pursue step-function changes — rethink how the prompt frames evidence triage and opinion writing — rather than marginal tweaks that only nudge the score inside the noise band. A change worth keeping should clear the current best clearly, not by a hair.
+Target: keep raising mean `opinion_quality` beyond the current best named in `eval/STATUS.md` and `eval/experiments.md`. The original 0.374 baseline has already been beaten; future changes still need step-function evidence, not marginal tweaks that only nudge the score inside the noise band. A change worth keeping should clear the current best clearly, not by a hair.
 
-Read `eval/experiments.md` before every experiment so you build on prior results instead of repeating dead ends.
+Read `eval/STATUS.md` and `eval/experiments.md` before every experiment so you start from the current plan and build on prior results instead of repeating dead ends.
 
 ## Metrics
 
@@ -22,10 +22,17 @@ Weeks in scope: `W04 W05 W06 W07 W08 W10 W11 W12 W13`. W07 has no target opinion
 
 Baseline (unmodified prompts) sits at 0.374 `opinion_quality` (pooled over two samples), ~0.91 recall, ~0.58 precision. The ledger header pins the exact **score to beat**; how a variant earns promotion is defined in Validity and promotion.
 
+## Status and ledger files
+
+- `eval/STATUS.md` is the living current-state handoff. It should be rewritten wholesale as time, experiments, current best, diagnosis, and next steps change. It is not an append-only log.
+- `eval/experiments.md` is the append-only experiment ledger. Add one entry per experiment or diagnostic result worth preserving.
+- Keep `eval/STATUS.md` short enough that a compacted or fresh session can read it quickly and know what to do next.
+
 ## Edit scope
 
-- You may edit **only** `src/opinions_agent/prompts.py` and `RULES.md`.
-- Never edit `src/opinions_agent/evals/` (scorers, runner, targets), `eval/opinion_targets.*`, or `OPINIONS.md`. Changing the scorer or the targets games the metric instead of improving the agent.
+- Preferred edit targets are `src/opinions_agent/prompts.py` and `RULES.md`.
+- You may edit the agent/critic harness when the experiment hypothesis requires new critic behavior, critic context, proposal routing, or coverage machinery. Keep those changes as small as possible and test prompt construction/tool behavior directly.
+- Never edit `src/opinions_agent/evals/` (scorers, runner, targets), `eval/opinion_targets.*`, or `OPINIONS.md` as an experiment lever. Changing the scorer or the targets games the metric instead of improving the agent. Temporary copied scorer/runner changes inside a disposable worktree are acceptable only for measurement reliability, such as bypassing a cached malformed judge response; record that caveat in the ledger.
 
 ## Anti-leakage rules
 
@@ -70,14 +77,14 @@ Each experiment is its own git worktree on its own `exp/<name>` branch. main is 
 
 The current best starts as `main` (the committed eval harness with unmodified prompts) and advances to a winning `exp/` branch as promotions happen. `eval/experiments.md` names the current-best branch and pins the score to beat.
 
-1. Read `eval/experiments.md` and pick a hypothesis not already tried.
+1. Read `eval/STATUS.md` for the current state and next-step plan, then read `eval/experiments.md` to avoid repeating tried variants.
 2. Branch a worktree from the current-best branch and give it its keys (`.env` is gitignored, so it is not inherited):
    ```
    git worktree add .worktrees/<exp> -b exp/<exp> <current-best-branch>   # use main for the first round
    cp .env .worktrees/<exp>/.env
    ```
    Branching from the current-best branch inherits every earlier promoted change.
-3. In the worktree, edit `prompts.py` and/or `RULES.md` for the hypothesis, respecting the anti-leakage rules.
+3. In the worktree, edit the minimal files needed for the hypothesis, respecting the anti-leakage rules. Prefer `prompts.py` and/or `RULES.md`; use agent/critic harness edits only when the experiment is about critic behavior, critic context, proposal routing, or coverage.
 4. From the main checkout, run the leakage tripwire: `uv run python eval/check_leakage.py .worktrees/<exp>`. It flags word n-grams newly added to the lever files (relative to main) that also appear in the test set. Review every hit and generalize any real leak before proceeding. It only catches verbatim and near-verbatim leaks, so the anti-leakage rules above still apply in full.
 5. Commit the change to the experiment's own branch — never main: `git -C .worktrees/<exp> commit -am "exp/<exp>: <hypothesis>"`. Committing is what lets a later experiment build on this one.
 6. Run the eval from the worktree, pointing at the shared corpus (the gitignored `.readwise` lives only in the main checkout) and naming the variant:
@@ -90,15 +97,18 @@ The current best starts as `main` (the committed eval harness with unmodified pr
    The experiment is named `<exp>-r1` and stamped with `variant`, `run`, and `scoring_version` metadata (`scoring_version` is the runner's pinned constant marking which targets/judges graded the run — experiments are score-comparable only within the same value). Runs dir, sqlite DB, seeded `OPINIONS.md`, `RULES.md`, and targets all resolve inside the worktree.
 7. Read the scores with `eval/inspect_experiment.py` (see Reading results), then apply the screen→replicate rule from Validity and promotion. Replication reruns reuse the same worktree with `--run 2`/`--run 3` (naming the experiments `<exp>-r2`/`-r3`).
 8. Append a result entry to the main checkout's `eval/experiments.md`, never the worktree copy. Use the format that file documents.
-9. If the variant is a confirmed winner, promote it by pointing **Current best** in the ledger at `exp/<exp>` and updating **Score to beat** to the variant's replicate mean; the next experiment branches from there. Nothing merges into main. Otherwise keep the branch and worktree for reference and deprioritize the variant — never delete non-winners, since a dead end still records what not to retry.
-10. Continue until the stop criterion.
+9. Rewrite the main checkout's `eval/STATUS.md` when the current best, diagnosis, stop count, or next-step plan changes. Keep it current-state only; do not append history there.
+10. If the variant is a confirmed winner, promote it by pointing **Current best** in the ledger at `exp/<exp>` and updating **Score to beat** to the variant's replicate mean; the next experiment branches from there. Nothing merges into main. Otherwise keep the branch and worktree for reference and deprioritize the variant — never delete non-winners, since a dead end still records what not to retry.
+11. Continue until the stop criterion.
 
 Always run a `baseline` experiment first (current prompts, unchanged) so every variant has something to beat.
 
 ## Stop criterion
 
-Stop when either mean `opinion_quality` reaches the **0.70** target, or it plateaus — three consecutive experiments fail to beat the current best. When driving with `/goal`, phrase the condition against what the ledger shows, for example:
+Stop when the current phase plateaus: five consecutive experiments fail to produce anything interesting. "Interesting" means at least one of: promotion; a clear targeted-screen improvement worth full-run validation; a useful mechanism insight that changes the next plan; or a meaningful prompt/harness simplification that holds current performance within noise. Ordinary failed screens count toward the stop threshold.
+
+When driving with `/goal`, phrase the condition against what `eval/STATUS.md` and the ledger show, for example:
 
 ```
-/goal Per eval/experiments.md, mean opinion_quality reached 0.70, or the last 3 experiments failed to beat the current best.
+/goal Per eval/STATUS.md and eval/experiments.md, continue until a variant is promoted or five consecutive experiments fail to produce promotion, targeted-screen improvement, useful mechanism insight, or simplification that holds performance.
 ```
