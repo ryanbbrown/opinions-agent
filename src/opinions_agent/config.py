@@ -4,7 +4,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-OPINION_AGENT_MODEL = "openai:gpt-5.5"
+OPINION_AGENT_MODEL = "anthropic:claude-opus-4-8"
 OPINION_AGENT_REASONING_EFFORT = "medium"
 
 

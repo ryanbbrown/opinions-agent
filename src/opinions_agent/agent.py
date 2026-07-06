@@ -190,8 +190,20 @@ def build_critic_tool(*, settings: Settings, context: AgentReadContext, client: 
     )
 
 
+def _model_extra_body() -> dict:
+    """Effort settings shaped for the harness model's provider; merged verbatim into each request payload."""
+    provider = OPINION_AGENT_MODEL.split(":", 1)[0]
+    if provider == "anthropic":
+        return {
+            "output_config": {"effort": OPINION_AGENT_REASONING_EFFORT},
+            "thinking": {"type": "adaptive"},
+            "max_tokens": 64000,
+        }
+    return {"reasoning": {"effort": OPINION_AGENT_REASONING_EFFORT}}
+
+
 def build_harness_config(*, context: AgentReadContext, settings: Settings):
-    from thinharness import HarnessConfig, NativeOutput
+    from thinharness import HarnessConfig
 
     read_paths = context.read_paths()
     write_paths = context.write_paths()
@@ -199,14 +211,14 @@ def build_harness_config(*, context: AgentReadContext, settings: Settings):
     return HarnessConfig(
         root=_common_root(read_paths + write_paths),
         model=OPINION_AGENT_MODEL,
-        extra_body={"reasoning": {"effort": OPINION_AGENT_REASONING_EFFORT}},
+        extra_body=_model_extra_body(),
         system_prompt=build_system_prompt(),
         builtin_tools=["read", "search", "jsonl_search", "list", "glob", "edit", "write"],
         read_paths=[str(path) for path in read_paths],
         write_paths=[str(path) for path in write_paths],
         output_dir=str(context.run_dir / ".thinharness" / "outputs"),
-        output_type=NativeOutput(AgentTurnOutput),
-        output_mode="native",
+        output_type=AgentTurnOutput,
+        output_mode="auto",
         local_trace_dir=str(settings.local_trace_dir),
         local_tracing=settings.local_tracing_enabled,
         tracing=[tracing] if tracing is not None else [],

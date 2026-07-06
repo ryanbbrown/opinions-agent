@@ -229,9 +229,13 @@ def test_harness_config_uses_fixed_native_tool_surface(settings: Settings, opini
     assert str((bundle.run_dir / "selected-documents.jsonl").resolve()) in config.read_paths
     assert str((bundle.run_dir / "review").resolve()) not in config.read_paths
     assert config.system_prompt == build_system_prompt()
-    assert config.output_mode == "native"
+    assert config.output_mode == "auto"
     assert config.model == OPINION_AGENT_MODEL
-    assert config.extra_body == {"reasoning": {"effort": OPINION_AGENT_REASONING_EFFORT}}
+    assert config.extra_body == {
+        "output_config": {"effort": OPINION_AGENT_REASONING_EFFORT},
+        "thinking": {"type": "adaptive"},
+        "max_tokens": 64000,
+    }
     assert read_json(CorpusPaths(settings.opinions_data_dir).opinion_id_high_water, default={}) == {}
 
 
