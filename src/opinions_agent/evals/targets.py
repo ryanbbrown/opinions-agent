@@ -26,6 +26,7 @@ class OpinionTarget(BaseModel):
     section: str
     ideal_opinion: str
     required_sources: list[str]
+    required_concepts: list[str] = Field(default_factory=list)
     source_quotes: list[SourceQuote] = Field(default_factory=list)
 
 

@@ -16,29 +16,34 @@ BRAINTRUST_PROXY_URL = "https://api.braintrust.dev/v1/proxy"
 JUDGE_MODEL = "claude-sonnet-4-5"
 
 JUDGE_PROMPT = """\
-You are grading whether a generated opinion contains all the core concepts of a canonical opinion that a human \
-already verified against the same source evidence.
+You are grading whether a generated opinion covers a fixed checklist of required core concepts, in a way that \
+agrees with the stance of a canonical opinion.
 
-Canonical opinion:
+Canonical opinion (stance reference only — do not require its exact wording or every detail it happens to contain):
 {ideal}
 
-Source evidence behind the canonical opinion:
-{evidence}
+Required core concepts — the generated opinion must express every one of these:
+{concepts}
 
 Generated opinion:
 {generated}
 
-The check is binary: does the generated opinion include all the core details and concepts of the canonical \
-opinion?
-- Core details and concepts are the central claim plus the named terms, mechanisms, examples, numbers, and \
-caveats that carry the canonical opinion's meaning.
-- Small wording differences are fine.
-- Extra related content beyond the canonical opinion is fine and must not cause a failure.
-- If any core detail or concept is missing, materially mis-stated, or replaced with a vaguer umbrella claim, \
-the generated opinion fails.
+Grade in two steps:
+1. Coverage. For each required core concept, decide whether the generated opinion expresses it. Wording may \
+differ and concepts may be bridged together differently; what matters is that the idea is present and not \
+weakened into a vaguer umbrella claim. A concept expressed but hollowed out into something noncommittal is not \
+covered.
+2. Stance. The generated opinion must take the same side as the canonical opinion. If it covers the concepts but \
+argues a different or contradictory position, that is a failure.
+
+The check is binary. The generated opinion passes only if every required core concept is covered and the stance \
+agrees. Extra detail beyond the concept list — elaboration, mechanism, examples, or a second point — does not by \
+itself cause a failure.
 
 Answer with JSON only, no other text:
-{{"pass": true | false, "missing": "<core concepts missing or mis-stated, empty if none>", \
+{{"concepts": [{{"concept": "<concept text>", "covered": true | false}}, ...], \
+"stance_agrees": true | false, "pass": true | false, \
+"missing": "<concepts missing or weakened; empty if none>", \
 "rationale": "<one or two sentences>"}}
 """
 
@@ -177,6 +182,8 @@ def make_opinion_judges(settings: Settings, *, model: str = JUDGE_MODEL, client:
                     "verdict": "pass" if passed else "fail",
                     "missing": verdict.get("missing"),
                     "rationale": verdict.get("rationale"),
+                    "concepts": verdict.get("concepts"),
+                    "stance_agrees": verdict.get("stance_agrees"),
                     "attempted": attempted,
                     "attempt_note": attempt_note,
                     "score": 1.0 if passed else 0.0,
@@ -300,9 +307,9 @@ async def _pick_candidate(client: Any, model: str, target: dict, candidates: lis
 
 
 async def _judge_pair(client: Any, model: str, target: dict, proposal: dict) -> dict:
-    evidence = "\n".join(f"- {quote['title']}: \"{quote['quote']}\"" for quote in target.get("source_quotes", []))
+    concepts = "\n".join(f"- {concept}" for concept in target.get("required_concepts", []))
     generated = proposal.get("opinion_text") or _strip_tags(proposal.get("message_text") or "")
-    prompt = JUDGE_PROMPT.format(ideal=target["ideal_opinion"], evidence=evidence or "(none)", generated=generated)
+    prompt = JUDGE_PROMPT.format(ideal=target["ideal_opinion"], concepts=concepts or "(none)", generated=generated)
     return await _judge_json(client, model, prompt)
 
 
