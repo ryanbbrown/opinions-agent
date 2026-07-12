@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 OPINION_AGENT_MODEL = "anthropic:claude-opus-4-8"
-OPINION_AGENT_REASONING_EFFORT = "medium"
+OPINION_AGENT_REASONING_EFFORT = "high"
 
 
 def load_dotenv(path: Path | str = ".env") -> None:

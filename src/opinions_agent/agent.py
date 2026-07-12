@@ -211,6 +211,7 @@ def build_harness_config(*, context: AgentReadContext, settings: Settings):
     return HarnessConfig(
         root=_common_root(read_paths + write_paths),
         model=OPINION_AGENT_MODEL,
+        request_timeout=1800,
         extra_body=_model_extra_body(),
         system_prompt=build_system_prompt(),
         builtin_tools=["read", "search", "jsonl_search", "list", "glob", "edit", "write"],
