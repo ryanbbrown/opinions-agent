@@ -1,0 +1,584 @@
+<title>Judge Calibration Audit — critic-2 pool</title>
+<style>
+  :root {
+    --bg: #FAF9F5;
+    --panel: #FFFFFF;
+    --panel-soft: #F3F1EA;
+    --ink: #23262C;
+    --muted: #6B7280;
+    --line: #E3E0D6;
+    --accent: #0E6863;
+    --v-real: #B0432B;
+    --v-real-bg: #F9ECE7;
+    --v-judge: #5A50C4;
+    --v-judge-bg: #EEECFA;
+    --v-border: #9A7412;
+    --v-border-bg: #F7F0DC;
+    --v-cov: #64707E;
+    --v-cov-bg: #ECEFF2;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16181D;
+      --panel: #1E2127;
+      --panel-soft: #23262D;
+      --ink: #E8E6DF;
+      --muted: #98A0AB;
+      --line: #2E323A;
+      --accent: #53B3AB;
+      --v-real: #E4826A;
+      --v-real-bg: #3A2620;
+      --v-judge: #A199EF;
+      --v-judge-bg: #2A2740;
+      --v-border: #D4AC45;
+      --v-border-bg: #362E18;
+      --v-cov: #96A1AE;
+      --v-cov-bg: #262B32;
+    }
+  }
+  :root[data-theme="light"] {
+    --bg: #FAF9F5; --panel: #FFFFFF; --panel-soft: #F3F1EA; --ink: #23262C; --muted: #6B7280;
+    --line: #E3E0D6; --accent: #0E6863;
+    --v-real: #B0432B; --v-real-bg: #F9ECE7; --v-judge: #5A50C4; --v-judge-bg: #EEECFA;
+    --v-border: #9A7412; --v-border-bg: #F7F0DC; --v-cov: #64707E; --v-cov-bg: #ECEFF2;
+  }
+  :root[data-theme="dark"] {
+    --bg: #16181D; --panel: #1E2127; --panel-soft: #23262D; --ink: #E8E6DF; --muted: #98A0AB;
+    --line: #2E323A; --accent: #53B3AB;
+    --v-real: #E4826A; --v-real-bg: #3A2620; --v-judge: #A199EF; --v-judge-bg: #2A2740;
+    --v-border: #D4AC45; --v-border-bg: #362E18; --v-cov: #96A1AE; --v-cov-bg: #262B32;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.55;
+    margin: 0;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 40px 24px 80px; }
+
+  h1 { font-size: 1.7rem; margin: 0 0 6px; letter-spacing: -0.015em; text-wrap: balance; }
+  .sub { color: var(--muted); font-size: 0.92rem; margin: 0 0 4px; }
+  .sub code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.85em; }
+
+  .counts { display: flex; flex-wrap: wrap; gap: 10px; margin: 22px 0 8px; }
+  .count {
+    flex: 1 1 130px; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 6px; padding: 10px 14px;
+  }
+  .count .n { font-size: 1.5rem; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .count .lbl { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); }
+  .count .det { font-size: 0.78rem; color: var(--muted); }
+  .count.c-real .n { color: var(--v-real); }
+  .count.c-judge .n { color: var(--v-judge); }
+  .count.c-border .n { color: var(--v-border); }
+  .count.c-cov .n { color: var(--v-cov); }
+
+  .impact {
+    background: var(--panel-soft); border: 1px solid var(--line); border-radius: 6px;
+    padding: 14px 18px; margin: 14px 0 0; font-size: 0.92rem;
+  }
+  .impact b { color: var(--accent); }
+
+  .patterns { margin: 26px 0 0; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 18px 22px; }
+  .patterns h2 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--accent); margin: 0 0 10px; }
+  .patterns ul { margin: 0; padding-left: 20px; font-size: 0.92rem; }
+  .patterns li { margin-bottom: 8px; }
+  .patterns li:last-child { margin-bottom: 0; }
+
+  .filters {
+    position: sticky; top: 0; z-index: 5; background: var(--bg);
+    display: flex; flex-wrap: wrap; gap: 8px; padding: 16px 0 12px;
+    border-bottom: 1px solid var(--line); margin: 26px 0 22px;
+  }
+  .filters button {
+    background: var(--panel); color: var(--ink); border: 1px solid var(--line);
+    border-radius: 999px; padding: 5px 14px; font-size: 0.85rem; cursor: pointer; font-family: inherit;
+  }
+  .filters button:hover { border-color: var(--accent); }
+  .filters button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .filters button.on { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 20px 24px; margin-bottom: 22px;
+  }
+  .card[hidden] { display: none; }
+  .card > header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 14px; }
+  .tid { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-weight: 650; font-size: 0.95rem; }
+  .meta { color: var(--muted); font-size: 0.83rem; }
+  .spacer { flex: 1; }
+  .chip {
+    font-size: 0.72rem; font-weight: 650; text-transform: uppercase; letter-spacing: 0.05em;
+    padding: 3px 10px; border-radius: 999px; white-space: nowrap;
+  }
+  .chip.real { color: var(--v-real); background: var(--v-real-bg); }
+  .chip.judge { color: var(--v-judge); background: var(--v-judge-bg); }
+  .chip.border { color: var(--v-border); background: var(--v-border-bg); }
+  .chip.cov { color: var(--v-cov); background: var(--v-cov-bg); }
+
+  .lbl-row { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 5px; }
+  .canon {
+    border-left: 3px solid var(--accent); padding: 2px 0 2px 16px; margin-bottom: 16px;
+  }
+  .optext {
+    font-family: Georgia, "Times New Roman", serif; font-size: 1.02rem; line-height: 1.6; margin: 0;
+  }
+  .fail { background: var(--panel-soft); border-radius: 6px; padding: 12px 16px; margin-bottom: 10px; }
+  .fail .runline { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; }
+  .run { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.78rem; color: var(--muted); }
+  .fail .optext { font-size: 0.97rem; }
+  .jnote { font-size: 0.85rem; color: var(--muted); margin: 8px 0 0; }
+  .jnote b { color: var(--ink); font-weight: 600; }
+  .unmatched { font-style: italic; color: var(--muted); font-family: inherit; font-size: 0.92rem; }
+
+  .mine { margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--line); font-size: 0.93rem; }
+  .mine p { margin: 0; }
+  .mine .lbl-row { color: var(--accent); }
+
+  .note-foot { color: var(--muted); font-size: 0.85rem; margin-top: 30px; }
+</style>
+
+<div class="wrap">
+  <h1>Judge Calibration Audit</h1>
+  <p class="sub">Every target that failed <code>opinion_quality</code> at least once across the four critic-2 runs (<code>r1–r3</code> are the 2026-07-05 rescores, plus <code>r4</code>) under <code>2026-07-05-plain-language</code>.</p>
+  <p class="sub">19 of 33 targets failed at least once — 30 failing instances out of 132 judged target-runs. Verdicts below are mine; the borderline ones especially need your ruling.</p>
+
+  <div class="counts">
+    <div class="count c-judge"><div class="n">6</div><div class="lbl">Likely judge issue</div><div class="det">9 instances</div></div>
+    <div class="count c-border"><div class="n">7</div><div class="lbl">Borderline — your call</div><div class="det">8 instances</div></div>
+    <div class="count c-real"><div class="n">4</div><div class="lbl">Real miss</div><div class="det">7 instances</div></div>
+    <div class="count c-cov"><div class="n">2</div><div class="lbl">Coverage, not judge</div><div class="det">6 instances</div></div>
+  </div>
+
+  <div class="impact">
+    <b>Impact estimate:</b> if the 9 likely-judge-issue instances had passed, the critic-2 pooled mean would be roughly <b>0.848</b> instead of 0.780. If every borderline instance also passed, roughly <b>0.909</b>. The agent may already be 5–13 points better than the metric says.
+  </div>
+
+  <div class="patterns">
+    <h2>Patterns worth fixing regardless of individual verdicts</h2>
+    <ul>
+      <li><b>Evidence bleed.</b> The judge prompt includes the source evidence, and several fail notes demand details that exist only there, not in the canonical opinion: the six-months-CRM example (W08-02), XML tags and "2K+ word prompts" (W08-04), recording-and-iteration practice (W04-05). Candidate fix: instruct the judge that evidence is context only — grade solely against the canonical text.</li>
+      <li><b>Verdict instability.</b> W04-05 fails three times for three different alleged gaps. Some judged "core concepts" are evidently not stable across sessions.</li>
+      <li><b>The named-anchor question.</b> A cluster of fails hinge on whether one named term is core: "the hook" (W08-01), "cognitive debt" (W10-03), "operational scars" (W11-04), "not well-rounded" (W10-02). That is target policy, not judging accuracy — worth ruling per-anchor and encoding the ruling in the targets or judge prompt.</li>
+    </ul>
+  </div>
+
+  <div class="filters" role="group" aria-label="Filter by verdict">
+    <button class="on" data-f="all">All 19</button>
+    <button data-f="judge">Judge issue 6</button>
+    <button data-f="border">Borderline 7</button>
+    <button data-f="real">Real miss 4</button>
+    <button data-f="cov">Coverage 2</button>
+  </div>
+
+  <!-- ============================ W04 ============================ -->
+
+  <article class="card" data-v="real">
+    <header>
+      <span class="tid">W04-01</span><span class="meta">Agentic Software · 3/4 runs pass</span>
+      <span class="spacer"></span><span class="chip real">Real miss</span>
+    </header>
+    <div class="canon"><div class="lbl-row">Canonical</div>
+      <p class="optext">As AI commoditizes scaffolding, the bottleneck moves to high-quality intent: having ideas worth pursuing, articulating what good looks like, and turning that intent into criteria that agents and organizations can optimize toward.</p>
+    </div>
+    <div class="fail">
+      <div class="runline"><span class="run">r3 · fail</span></div>
+      <p class="optext">The human-owned artifact in agentic software should increasingly be the spec, acceptance criteria, and verification contract: articulate intent as discrete, testable ideal-state criteria so agents can hill-climb from current state to verified outcome.</p>
+      <p class="jnote"><b>Judge:</b> The concept that AI commoditizes scaffolding and creates a bottleneck shift; the emphasis on having ideas worth pursuing and the quality of ideas; the broader scope of orienting agents and organizations (not just individual agent tasks)</p>
+    </div>
+    <div class="mine"><div class="lbl-row">My read</div>
+      <p>The r3 draft recenters on "own the spec and verification contract" — a related but different opinion. The commoditization mechanism and "ideas worth pursuing" are genuinely gone, not paraphrased. Judge is right.</p>
+    </div>
+  </article>
+
+  <article class="card" data-v="real">
+    <header>
+      <span class="tid">W04-02</span><span class="meta">Moats And Strategy · 3/4 runs pass</span>
+      <span class="spacer"></span><span class="chip real">Real miss</span>
+    </header>
+    <div class="canon"><div class="lbl-row">Canonical</div>
+      <p class="optext">Expertise is dispersing from experts' heads into skills, SOPs, context files, and open-source projects, and once captured it never comes back out; advantages based only on undocumented expert memory will erode as AI reuses what gets captured.</p>
+    </div>
+    <div class="fail">
+      <div class="runline"><span class="run">r3 · fail</span></div>
+      <p class="optext">Expertise captured into skills, SOPs, context files, and open source projects becomes a one-way ratchet: it stops dying with individual experts, permanently enters AI-usable infrastructure, and makes future work more transparent and automatable.</p>
+      <p class="jnote"><b>Judge:</b> The erosion of advantages based on undocumented expert memory as AI reuses captured knowledge</p>
+    </div>
+    <div class="mine"><div class="lbl-row">My read</div>
+      <p>The draft keeps the capture/ratchet mechanism but drops the strategic consequence — that undocumented-memory advantages erode. That half is what makes this a Moats opinion instead of an observation; "more transparent and automatable" only gestures at it. Judge defensible, though it's the mildest of the real misses.</p>
+    </div>
+  </article>
+
+  <article class="card" data-v="judge">
+    <header>
+      <span class="tid">W04-04</span><span class="meta">Career And Work · 3/4 runs pass</span>
+      <span class="spacer"></span><span class="chip judge">Likely judge issue</span>
+    </header>
+    <div class="canon"><div class="lbl-row">Canonical</div>
+      <p class="optext">Career growth is not something to wait for: managers can help, but ambitious people need to proactively tell their manager what they want, ask what must be true to reach the next level, and seek scope instead of assuming good work will be noticed.</p>
+    </div>
+    <div class="fail">
+      <div class="runline"><span class="run">r3 · fail</span></div>
+      <p class="optext">Your manager is a powerful career resource, not the owner of your career; if you want growth, make the goal explicit and ask what must become true on the team instead of waiting to be noticed.</p>
+      <p class="jnote"><b>Judge:</b> The concept that ambitious people need to proactively take action (not wait), and the specific advice to seek scope instead of assuming good work will be noticed</p>
+    </div>
+    <div class="mine"><div class="lbl-row">My read</div>
+      <p>Half the judge's note is factually wrong: the draft literally says "instead of waiting to be noticed" — the proactivity concept the judge claims is missing. The only true gap is the phrase "seek scope", one member of a three-part action list. I would have passed this.</p>
+    </div>
+  </article>
+
+  <article class="card" data-v="border">
+    <header>
+      <span class="tid">W04-05</span><span class="meta">Career And Work · 1/4 runs pass</span>
+      <span class="spacer"></span><span class="chip border">Borderline</span>
+    </header>
+    <div class="canon"><div class="lbl-row">Canonical</div>
+      <p class="optext">In hiring, an impressive accomplishment only creates signal if the candidate can deliver it well; a truthful, practiced account of tradeoffs and close calls reveals more than a polished success story that hides how they actually think.</p>
+    </div>
+    <div class="fail">
+      <div class="runline"><span class="run">r1 · fail</span></div>
+      <p class="optext">In senior hiring, technical skill is often only the ante; the deciding signal is whether a candidate can tell clear, honest stories that reveal how they think, handle tradeoffs, and would feel to work with on a tough problem. Rehearsing those stories is not fake: write the answers, record yourself, review for rambling, filler, and nervousness, then repeat until the real judgment is visible instead of buried under bad delivery.</p>
+      <p class="jnote"><b>Judge:</b> The conditional nature that an impressive accomplishment only creates signal if delivered well; the specific contrast between polished success stories that hide thinking versus truthful accounts of tradeoffs and close calls</p>
+    </div>
+    <div class="fail">
+      <div class="runline"><span class="run">r2 · fail</span></div>
+      <p class="optext">In senior hiring, technical skill is often the ante rather than the deciding factor; the interview is a work-sample for judgment, communication, and fit, so practiced, honest stories about hard calls beat vague rambling or over-polished answers that hide how someone actually thinks.</p>
+      <p class="jnote"><b>Judge:</b> The specific requirement that impressive accomplishments need good delivery to create signal; the emphasis on practicing delivery through recording and iteration; the focus on revealing tradeoffs and close calls specifically.</p>
+    </div>
+    <div class="fail">
+      <div class="runline"><span class="run">r4 · fail</span></div>
+      <p class="optext">In interviews, technical skill is often the ante, not the decider; a strong accomplishment can be wasted by bad delivery, so write answers, record yourself, review the rambling and filler words, and rehearse honest stories until the team can see how you think in hard situations.</p>
+      <p class="jnote"><b>Judge:</b> The concept that a truthful account of tradeoffs and close calls reveals more than a polished success story that hides how they actually think</p>
+    </div>
+    <div class="mine"><div class="lbl-row">My read</div>
+      <p>Three fails, three different alleged gaps — the instability is the finding. The r2 demand for "practicing delivery through recording and iteration" isn't in the canonical at all (evidence bleed), and r2's draft carries both halves in close words ("practiced, honest stories about hard calls beat … over-polished answers that hide how someone actually thinks") — that one looks like a false negative. r1 and r4 do genuinely soften the polished-vs-truthful contrast.</p>
+    </div>
+  </article>
+
+  <!-- ============================ W05 ============================ -->
+
+  <article class="card" data-v="cov">
+    <header>
+      <span class="tid">W05-03</span><span class="meta">AI Leverage And Organizations · 2/4 runs pass</span>
+      <span class="spacer"></span><span class="chip cov">Coverage, not judge</span>
+    </header>
+    <div class="canon"><div class="lbl-row">Canonical</div>
+      <p class="optext">AI does not need to beat an idealized version of knowledge work; in many companies it only has to beat messy, inconsistent operations where simply following instructions reliably is already above the current bar.</p>
+    </div>
+    <div class="fail">
+      <div class="runline"><span class="run">r1, r2 · unmatched</span></div>
+      <p class="unmatched">No proposal expressed this claim in the failing runs — there is nothing for the judge to grade.</p>
+    </div>
+    <div class="mine"><div class="lbl-row">My read</div>
+      <p>Not a judge question: in the failing runs the agent never proposed this opinion at all. Agent-side coverage flakiness (it passes when proposed).</p>
+    </div>
+  </article>
+
+  <article class="card" data-v="judge">
+    <header>
+      <span class="tid">W05-04</span><span class="meta">Career And Work · 3/4 runs pass</span>
+      <span class="spacer"></span><span class="chip judge">Likely judge issue</span>
+    </header>
+    <div class="canon"><div class="lbl-row">Canonical</div>
+      <p class="optext">People do not need work specifically; they need four things work happens to provide — agency, contribution, mastery, and connection — so if AI displaces work, whatever comes after has to supply those four functions, not just income.</p>
+    </div>
+    <div class="fail">
+      <div class="runline"><span class="run">r4 · fail</span></div>
+      <p class="optext">People do not need work itself as much as the agency, contribution, mastery, and connection that work often provides; if AI weakens work as the default source of income and identity, new institutions should be judged by whether they recreate those four goods rather than by whether they preserve jobs for their own sake.</p>
+      <p class="jnote"><b>Judge:</b> The requirement that 'whatever comes after has to supply those four functions, not just income'</p>
+    </div>
+    <div class="mine"><div class="lbl-row">My read</div>
+      <p>"New institutions should be judged by whether they recreate those four goods" is the allegedly-missing requirement, in different words. The only drift is the foil: canonical says "not just income", the draft says "not job-preservation" — and the draft separately names income. If wording differences are fine, this passes. Clear false negative in my read.</p>
+    </div>
+  </article>
+
+  <!-- ============================ W06 ============================ -->
+
+  <article class="card" data-v="judge">
+    <header>
+      <span class="tid">W06-01</span><span class="meta">Agentic Software · 2/4 runs pass</span>
+      <span class="spacer"></span><span class="chip judge">Likely judge issue</span>
+    </header>
+    <div class="canon"><div class="lbl-row">Canonical</div>
+      <p class="optext">In agentic product work, Figma is in an awkward position: when the product ultimately lives in code, the design source of truth should move closer to executable code rather than a manual, pre-agentic replica of the system.</p>
+    </div>
+    <div class="fail">
+      <div class="runline"><span class="run">r2 · fail</span></div>
+      <p class="optext">Design tooling should move toward "truth to materials": when agents are fluent in code and implementation is the real medium, keeping Figma as a manual, proprietary source of truth becomes brittle; the durable split is code-first design for production and freeform tools for exploration.</p>
+      <p class="jnote"><b>Judge:</b> The specific context of 'agentic product work' and the idea that design source of truth should move closer to executable code (rather than just being 'code-first'). The canonical opinion specifically frames Figma's awkwardness in the context of when 'the product ultimately lives in code.'</p>
+    </div>
+    <div class="fail">
+      <div class="runline"><span class="run">r3 · fail</span></div>
+      <p class="optext">Design tools should be honest about their eventual medium: when AI can work directly in code, a proprietary design file becomes a lossy, pre-agentic source of truth, so code-first tools like Claude Design should own the implementation loop while non-code tools should lean into unconstrained exploration instead of pretending to be canonical.</p>
+      <p class="jnote"><b>Judge:</b> The specific context of 'agentic product work' and the idea that design source of truth should move closer to executable code (rather than just AI working directly in code). The canonical opinion focuses on Figma's awkward position in agentic product work specifically, not design tools generally.</p>
+    </div>
+    <div class="mine"><div class="lbl-row">My read</div>
+      <p>Both drafts name Figma, call it a manual / pre-agentic source of truth, and put production design truth in code ("code-first design for production", "own the implementation loop"). The judge insists on the literal frame "agentic product work" while the drafts say "when agents are fluent in code" / "when AI can work directly in code" — the same context in other words. Vocabulary-level fails.</p>
+    </div>
+  </article>
+
+  <!-- ============================ W08 ============================ -->
+
+  <article class="card" data-v="border">
+    <header>
+      <span class="tid">W08-01</span><span class="meta">Taste, Craft, And Signal · 3/4 runs pass</span>
+      <span class="spacer"></span><span class="chip border">Borderline</span>
+    </header>
+    <div class="canon"><div class="lbl-row">Canonical</div>
+      <p class="optext">In AI-assisted creative work, taste is not just knowing what you want but knowing what to reject: the default output is almost always generic, so have an opinion about the defaults — starting with the hook — and be willing to override them.</p>
+    </div>
+    <div class="fail">
+      <div class="runline"><span class="run">r3 · fail</span></div>
+      <p class="optext">Taste matters more when implementation gets cheaper because AI defaults converge on the most probable patterns; real taste is the trained ability to know what good looks like, reject generic defaults, and spend attention after the AI finishes turning acceptable output into something specific and worth caring about.</p>
+      <p class="jnote"><b>Judge:</b> The specific emphasis on 'the hook' as the starting point and the example that 'the default hook is almost always wrong'; the specific context of AI-assisted creative work</p>
+    </div>
+    <div class="mine"><div class="lbl-row">My read</div>
+      <p>This is your cited example class. The stance — defaults are generic, know what to reject, override — is fully present and arguably sharper. What's missing is the named anchor "starting with the hook." Whether that anchor is a core concept or an illustrative detail is a target-policy decision, not an agent error.</p>
+    </div>
+  </article>
+
+  <article class="card" data-v="real">
+    <header>
+      <span class="tid">W08-02</span><span class="meta">Taste, Craft, And Signal · 1/4 runs pass</span>
+      <span class="spacer"></span><span class="chip real">Real miss</span>
+    </header>
+    <div class="canon"><div class="lbl-row">Canonical</div>
+      <p class="optext">When AI can cheaply generate repos, tests, docs, and demos, real use becomes a stronger trust signal than polished artifacts; for serious software, prefer products with operational proof from yourself or comparable customers.</p>
+    </div>
+    <div class="fail">
+      <div class="runline"><span class="run">r2 · fail</span></div>
+      <p class="optext">In AI-generated software, polished repo artifacts are no longer strong proof of care because agents can generate commits, READMEs, tests, and docs quickly; evidence that someone has actually used the software for weeks is a stronger signal than a barely exercised project.</p>
+      <p class="jnote"><b>Judge:</b> The preference for products with operational proof from yourself or comparable customers; the specific example of wanting CRM used by giant enterprises for six months; the context of 'serious software'</p>
+    </div>
+    <div class="fail">
+      <div class="runline"><span class="run">r3 · fail</span></div>
+      <p class="optext">AI will make more software worth buying from professional software companies, not just more software worth vibe-coding yourself; for consequential tools, customers should prefer products that have been operated successfully by real users over DIY code they could technically generate.</p>
+      <p class="jnote"><b>Judge:</b> The specific AI-generated artifacts (repos, tests, docs, demos) that make operational proof more valuable; the concept that AI can 'cheaply generate' these artifacts; the requirement for operational proof from 'yourself or comparable customers' rather than just 'real users'</p>
+    </div>
+    <div class="fail">
+      <div class="runline"><span class="run">r4 · fail</span></div>
+      <p class="optext">For AI-generated software, the fact that someone has actually used the thing can matter more than polished tests or documentation; a vibe-coded tool used every day for two weeks is stronger evidence than something just spat out and barely exercised.</p>
+      <p class="jnote"><b>Judge:</b> The concept that AI can cheaply generate repos, tests, docs, and demos; the recommendation to prefer products with operational proof from yourself or comparable customers; the example of requiring two other giant enterprises to have used a CRM for six months for serious software.</p>
+    </div>
+    <div class="mine"><div class="lbl-row">My read</div>
+      <p>Mostly real: the canonical has two halves and each fail drops one — r3 loses the cheap-generation mechanism entirely; r2 and r4 lose the prescription ("operational proof from yourself or comparable customers"). But note the judge also repeatedly demands the six-months-CRM example, which is only in the source evidence, not the canonical — evidence bleed inflating the requirement list.</p>
+    </div>
+  </article>
+
+  <article class="card" data-v="judge">
+    <header>
+      <span class="tid">W08-03</span><span class="meta">Career And Work · 2/4 runs pass</span>
+      <span class="spacer"></span><span class="chip judge">Likely judge issue</span>
+    </header>
+    <div class="canon"><div class="lbl-row">Canonical</div>
+      <p class="optext">Passive productivity like reading and podcasts is helpful, but it has diminishing returns; active productivity scales better because its returns compound the more time you spend creating.</p>
+    </div>
+    <div class="fail">
+      <div class="runline"><span class="run">r2 · fail</span></div>
+      <p class="optext">Active productivity compounds more than passive productivity: consuming information can make you well-informed, but creating, doing, and taking repeated action produce the exponential returns that passive reading, podcasts, and scrolling usually do not.</p>
+      <p class="jnote"><b>Judge:</b> The canonical opinion's caveat that passive productivity 'has diminishing returns' is replaced with the claim that it 'usually does not' produce exponential returns, which is a different concept. Also missing is the specific acknowledgment that passive productivity is 'helpful' before noting its limitations.</p>
+    </div>
+    <div class="fail">
+      <div class="runline"><span class="run">r4 · fail</span></div>
+      <p class="optext">Passive productivity—reading, podcasts, lurking—is useful but quickly diminishing; active production compounds, so learning should leave public or at least durable exhaust aimed at helping your past self rather than chasing likes.</p>
+      <p class="jnote"><b>Judge:</b> The specific mechanism that active productivity's returns compound the more time you spend creating</p>
+    </div>
+    <div class="mine"><div class="lbl-row">My read</div>
+      <p>r4 says "useful but quickly diminishing" and "active production compounds" — both allegedly-missing concepts are present; it fails only for lacking the qualifier "the more time you spend creating." That's a false negative. r2 is the honest debate: "diminishing returns" vs "doesn't produce exponential returns" are technically different claims, though I doubt the distinction matters to you.</p>
+    </div>
+  </article>
+
+  <article class="card" data-v="border">
+    <header>
+      <span class="tid">W08-04</span><span class="meta">Agentic Software · 2/4 runs pass</span>
+      <span class="spacer"></span><span class="chip border">Borderline</span>
+    </header>
+    <div class="canon"><div class="lbl-row">Canonical</div>
+      <p class="optext">Agent prompts and harnesses should simplify as models improve: give clear structure and canonical examples, but avoid sprawling if-else prompts that try to pre-solve every edge case.</p>
+    </div>
+    <div class="fail">
+      <div class="runline"><span class="run">r2 · fail</span></div>
+      <p class="optext">Agent systems should keep prompts and harnesses in a Goldilocks zone: structured enough to provide sections and canonical examples, but simple enough that reusable judgment lives in skills/files and repeatable execution lives in deterministic tools; if the harness gets more complex as models improve, something is wrong.</p>
+      <p class="jnote"><b>Judge:</b> The specific failure modes (over-engineered 2K+ word if-else prompts vs vague prompts), the need to avoid pre-solving edge cases and instead let the model handle them, and the use of XML tags or markdown headers for organization</p>
+    </div>
+    <div class="fail">
+      <div class="runline"><span class="run">r3 · fail</span></div>
+      <p class="optext">System prompts for agents have a Goldilocks zone: avoid both giant if/else manuals and vague "be helpful" prompts; use clear sections, canonical examples, and enough structure for the model to infer edge cases instead of hard-coding them all.</p>
+      <p class="jnote"><b>Judge:</b> The temporal dimension that prompts should simplify *as models improve*, and the pattern that best agents keep getting simpler through rewrites (removing things), not more complex</p>
+    </div>
+    <div class="mine"><div class="lbl-row">My read</div>
+      <p>Split verdict. r2's fail looks wrong: it carries the headline temporal claim ("if the harness gets more complex as models improve, something is wrong") and the judge instead demands XML tags and "2K+ word prompts" — details from the source, not the canonical (evidence bleed). r3's fail is legitimate: the simplify-as-models-improve dimension is genuinely absent there.</p>
+    </div>
+  </article>
+
+  <!-- ============================ W10 ============================ -->
+
+  <article class="card" data-v="border">
+    <header>
+      <span class="tid">W10-02</span><span class="meta">Career And Work · 3/4 runs pass</span>
+      <span class="spacer"></span><span class="chip border">Borderline</span>
+    </header>
+    <div class="canon"><div class="lbl-row">Canonical</div>
+      <p class="optext">Career leverage is not about being well-rounded; Price's Law suggests that a small square-root-sized minority produces much of the output, so the goal is to find and compound your √n multiplier skills into a rare combination.</p>
+    </div>
+    <div class="fail">
+      <div class="runline"><span class="run">r1 · fail</span></div>
+      <p class="optext">Price's Law is a useful career heuristic: in power-law domains, the square root of contributors can produce half the output — 10 of 100 employees, 100 of 10,000 scientists, or 5 of 25 teammates — so strategy should focus on finding and compounding the few √n skills or outputs that drive most results; a top-10% writer plus top-10% strategist can become top-1% at strategic writing.</p>
+      <p class="jnote"><b>Judge:</b> The concept that career leverage is NOT about being well-rounded</p>
+    </div>
+    <div class="mine"><div class="lbl-row">My read</div>
+      <p>Everything is present — Price's Law, √n, compounding into a rare combination, even a concrete example — except the explicit negation "not about being well-rounded." The draft's whole thrust contradicts well-roundedness implicitly. A strict reading of the corrections rule says the rejected default must be stated; common sense says this draft is anything but a platitude. Your call.</p>
+    </div>
+  </article>
+
+  <article class="card" data-v="border">
+    <header>
+      <span class="tid">W10-03</span><span class="meta">Agentic Software · 3/4 runs pass</span>
+      <span class="spacer"></span><span class="chip border">Borderline</span>
+    </header>
+    <div class="canon"><div class="lbl-row">Canonical</div>
+      <p class="optext">AI coding should be used as a learning loop, not just an issue-closing machine; if the model removes all friction without forcing hypotheses, explanations, and reflection, cognitive debt accumulates.</p>
+    </div>
+    <div class="fail">
+      <div class="runline"><span class="run">r2 · fail</span></div>
+      <p class="optext">Making code cheap to generate does not make system comprehension or engineering learning cheap to skip; the default AI coding loop optimizes for closing tasks, so engineers should preserve some learning friction by forming hypotheses, asking for explanations before code, and checking whether sessions produced understanding rather than only closed issues.</p>
+      <p class="jnote"><b>Judge:</b> The concept of 'cognitive debt' accumulating when friction is removed without forcing reflection</p>
+    </div>
+    <div class="mine"><div class="lbl-row">My read</div>
+      <p>The full mechanism is there: learning loop vs issue-closing, preserved friction, hypotheses, explanations, reflection-check. Missing only the coined term "cognitive debt." Same class as "the hook" — does the named term itself matter to you, or is the mechanism enough?</p>
+    </div>
+  </article>
+
+  <!-- ============================ W11 ============================ -->
+
+  <article class="card" data-v="judge">
+    <header>
+      <span class="tid">W11-01</span><span class="meta">Moats And Strategy · 3/4 runs pass</span>
+      <span class="spacer"></span><span class="chip judge">Likely judge issue</span>
+    </header>
+    <div class="canon"><div class="lbl-row">Canonical</div>
+      <p class="optext">AI-native service firms only become software-like when delivery gets easier, faster, and better with each client; the durable asset is vertical workflow knowledge, reusable agents, process data, and proof that the system compounds.</p>
+    </div>
+    <div class="fail">
+      <div class="runline"><span class="run">r4 · fail</span></div>
+      <p class="optext">AI agencies deserve software-like multiples only when services are the deployment layer for owned vertical workflows: AI lowers the cost of building automation, not the cost of understanding the workflow, so each client should leave behind reusable playbooks, agents, process data, specialist talent, and faster, cleaner delivery. If client five is just as hard as client one, the firm is still selling labor with better tools.</p>
+      <p class="jnote"><b>Judge:</b> The canonical opinion emphasizes that the durable asset is what makes firms software-like, and that the system must compound. The generated opinion does not explicitly state that these elements form the durable asset or that proof of compounding/efficiency gains over time is required.</p>
+    </div>
+    <div class="mine"><div class="lbl-row">My read</div>
+      <p>The draft enumerates the same asset list (playbooks, agents, process data, delivery gains) and states the compounding requirement as its sharpest line: "if client five is just as hard as client one, the firm is still selling labor." The judge wanted the literal words "durable asset" and "proof." False negative in my read.</p>
+    </div>
+  </article>
+
+  <article class="card" data-v="real">
+    <header>
+      <span class="tid">W11-04</span><span class="meta">Career And Work · 3/4 runs pass</span>
+      <span class="spacer"></span><span class="chip real">Real miss</span>
+    </header>
+    <div class="canon"><div class="lbl-row">Canonical</div>
+      <p class="optext">Career choices should be judged by the compounding assets they build - skills, reputation, network, options, and operational scars - not just immediate pay, title, or brand.</p>
+    </div>
+    <div class="fail">
+      <div class="runline"><span class="run">r3 · fail</span></div>
+      <p class="optext">Career decisions should be judged by whether they compound skill, network, reputation, and optionality capital over a decade, not whether the next title, pay bump, or brand feels like progress; optimize for the move after the next by going deep in a specific domain, building networks through real work, and making expertise legible through a consistent public footprint and specific hard-earned wins.</p>
+      <p class="jnote"><b>Judge:</b> operational scars</p>
+    </div>
+    <div class="mine"><div class="lbl-row">My read</div>
+      <p>The draft kept the four familiar list members and dropped "operational scars" — the distinctive one. This is exactly the enumeration failure the fidelity rules warn about (the least familiar member is what makes the opinion yours). Judge right — unless you decide the term isn't core, which would move it to the named-anchor bucket.</p>
+    </div>
+  </article>
+
+  <!-- ============================ W12 ============================ -->
+
+  <article class="card" data-v="judge">
+    <header>
+      <span class="tid">W12-03</span><span class="meta">Taste, Craft, And Signal · 3/4 runs pass</span>
+      <span class="spacer"></span><span class="chip judge">Likely judge issue</span>
+    </header>
+    <div class="canon"><div class="lbl-row">Canonical</div>
+      <p class="optext">Use agents to remove routine work that does not benefit from synchronous involvement, but stay deliberately in the loop where taste develops and original work needs you shaping it rather than just approving it.</p>
+    </div>
+    <div class="fail">
+      <div class="runline"><span class="run">r2 · fail</span></div>
+      <p class="optext">Move routine agent work from human-in-the-loop to human-on-the-loop only when there are real review surfaces and cadences; stay deliberately in the loop for creative, taste-making work because that is where original fingerprints and taste develop, not just approval.</p>
+      <p class="jnote"><b>Judge:</b> The concept of 'removing routine work' is replaced with a more specific mechanism about 'human-in-the-loop to human-on-the-loop' transitions with 'review surfaces and cadences' that is not present in the canonical opinion.</p>
+    </div>
+    <div class="mine"><div class="lbl-row">My read</div>
+      <p>Both halves are present: delegate routine work, stay in the loop where taste develops, shaping vs approving. The draft adds HOTL/review-surface specificity, and the judge treated the addition as a replacement — but its own instructions say extra related content must not cause failure. Failing a draft for being more specific inverts the metric's intent.</p>
+    </div>
+  </article>
+
+  <!-- ============================ W13 ============================ -->
+
+  <article class="card" data-v="border">
+    <header>
+      <span class="tid">W13-02</span><span class="meta">Agentic Software · 3/4 runs pass</span>
+      <span class="spacer"></span><span class="chip border">Borderline</span>
+    </header>
+    <div class="canon"><div class="lbl-row">Canonical</div>
+      <p class="optext">Agentic optimization is only as good as its loss function: if the target, constraints, instruments, and examples leave cheap paths open, the agent will exploit them instead of getting genuinely better.</p>
+    </div>
+    <div class="fail">
+      <div class="runline"><span class="run">r3 · fail</span></div>
+      <p class="optext">Long-running agent loops should be treated as optimizers, not interns: without a loss function made of a target, constraints, instruments, and forced entropy, they will sprint down the cheapest path, overfit visible evals, or grind past time and budget; real expected-output examples let you run the production edge-case soak before shipping.</p>
+      <p class="jnote"><b>Judge:</b> The core concept that agentic optimization is 'only as good as its loss function' and that agents will exploit cheap paths 'instead of getting genuinely better' is diluted. The generated opinion focuses on what agents will do wrong without the loss function components, but doesn't emphasize the fundamental dependency relationship that optimization quality is bounded by loss function quality.</p>
+    </div>
+    <div class="mine"><div class="lbl-row">My read</div>
+      <p>Close call. The "only as good as" bound is implicit rather than stated, and the four-part enumeration quietly swapped "examples" for "forced entropy" (examples reappear in a different role). More drift than paraphrase, less than a clean loss. I'd narrowly uphold the fail, but wouldn't argue with the reverse.</p>
+    </div>
+  </article>
+
+  <article class="card" data-v="border">
+    <header>
+      <span class="tid">W13-04</span><span class="meta">Moats And Strategy · 3/4 runs pass</span>
+      <span class="spacer"></span><span class="chip border">Borderline</span>
+    </header>
+    <div class="canon"><div class="lbl-row">Canonical</div>
+      <p class="optext">Anything you can put on a leaderboard you can train against, so anything measurable is already on its way to commodity; durable value moves toward complex, private work that cannot be easily measured or copied.</p>
+    </div>
+    <div class="fail">
+      <div class="runline"><span class="run">r3 · fail</span></div>
+      <p class="optext">AI commoditizes work that can be publicly measured or leaderboarded; durable value shifts to private and expensive-to-establish correctness — company data, real user edge cases, permissions, accountability, workflow trust, and the authority to define what good means from inside the field.</p>
+      <p class="jnote"><b>Judge:</b> The concept that durable value moves toward complex, private work that cannot be easily measured or copied is replaced with specific examples (company data, edge cases, permissions, etc.) rather than the general principle about unmeasurable/uncopiable work.</p>
+    </div>
+    <div class="mine"><div class="lbl-row">My read</div>
+      <p>The commoditization half is intact. "Complex, private work that cannot be easily measured or copied" became "private and expensive-to-establish correctness" plus concrete examples — arguably an equally strong restatement, arguably a narrowing that loses "hard to copy." The train-against mechanism is also compressed to "AI commoditizes." I lean acceptable, but it's the fuzziest case here.</p>
+    </div>
+  </article>
+
+  <article class="card" data-v="cov">
+    <header>
+      <span class="tid">W13-05</span><span class="meta">Agentic Software · 0/4 runs pass</span>
+      <span class="spacer"></span><span class="chip cov">Coverage, not judge</span>
+    </header>
+    <div class="canon"><div class="lbl-row">Canonical</div>
+      <p class="optext">In AI-generated products, private eval sets, real user edge cases, specs, and verification artifacts are more durable than the artifact itself, because they encode what good means and what must remain true; SQLite's closed test suite is a clearer moat than its open source implementation.</p>
+    </div>
+    <div class="fail">
+      <div class="runline"><span class="run">r1, r3, r4 · unmatched</span></div>
+      <p class="unmatched">No proposal expressed this claim — there is nothing for the judge to grade.</p>
+    </div>
+    <div class="fail">
+      <div class="runline"><span class="run">r2 · fail (mismatched)</span></div>
+      <p class="optext">Agent harnesses should be kept simple and close to the major products: most genuinely useful coding-agent workflow features get absorbed into Claude, Codex, and other frontier harnesses quickly, so durable skill comes from context control, task design, and verification rather than chasing every bespoke dependency.</p>
+      <p class="jnote"><b>Judge:</b> The canonical opinion's core concepts about AI-generated products, private eval sets, real user edge cases, specs, verification artifacts encoding 'what good means', durability compared to the artifact itself, and the SQLite test suite example as a moat are entirely absent. The generated opinion discusses agent harnesses and coding workflows instead.</p>
+    </div>
+    <div class="mine"><div class="lbl-row">My read</div>
+      <p>Not a judge question: three runs never proposed it, and r2's "fail" is the matcher pairing the target with an unrelated proposal. This is the known update-routing case (the evidence should update an existing opinion; the agent folds it elsewhere). Zero passes in the pool, all agent-side.</p>
+    </div>
+  </article>
+
+  <p class="note-foot">Source: judge verdicts stored on the four critic-2 Braintrust experiments; canonical texts from <code style="font-family:ui-monospace,Menlo,monospace">eval/opinion_targets.jsonl</code>. Impact estimates recompute the week-averaged pool with the listed instances flipped to pass. Verdict labels are Claude's assessment, for Ryan to confirm or overrule.</p>
+</div>
+
+<script>
+  const buttons = document.querySelectorAll('.filters button');
+  const cards = document.querySelectorAll('.card');
+  buttons.forEach(btn => btn.addEventListener('click', () => {
+    buttons.forEach(b => b.classList.toggle('on', b === btn));
+    const f = btn.dataset.f;
+    cards.forEach(c => { c.hidden = (f !== 'all' && c.dataset.v !== f); });
+  }));
+</script>
