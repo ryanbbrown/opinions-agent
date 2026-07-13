@@ -4,8 +4,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-OPINION_AGENT_MODEL = "openai:gpt-5.5"
-OPINION_AGENT_REASONING_EFFORT = "medium"
+OPINION_AGENT_MODEL = os.environ.get("OPINION_AGENT_MODEL", "openai:gpt-5.5")
+OPINION_AGENT_REASONING_EFFORT = os.environ.get("OPINION_AGENT_REASONING_EFFORT", "medium")
 
 
 def load_dotenv(path: Path | str = ".env") -> None:
