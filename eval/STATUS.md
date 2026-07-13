@@ -37,6 +37,10 @@ Behaviors currently implicit that candidate variants should make explicit (one e
 
 When a variant does badly — a week collapses, a model diverges, a screen regresses — **investigate the traces before designing the next variant** (per-target judge notes via `inspect_experiment.py`, Braintrust traces, worktree `.runs` DBs) and attribute the failure: refusal / routing / dropped concept / weakened paraphrase / infra error. GOAL "Reading results" makes this a protocol duty.
 
+### Round base
+
+Experiments this round branch from **`exp/explicit-base`** (worktree `.worktrees/explicit-base`): critic-2 prompts with the **critic step removed** (commit `90e23c0` on `exp/critic-2-no-critic`) plus the env-override config commit (`707d569`). Rationale: the critic rescues exactly the omissions the rewrite tries to prevent in the first draft, so it masks draft-formation deltas between variants — critic-less runs measure the rewrite directly, and cost less. The promotion bar stays critic-2's 0.865; a critic-less variant that clears it is a double win (simpler and better). If a winning rewrite lands close-but-below, re-adding the critic on top is an explicit composition experiment. What removal gives up: the floor (no-critic floor 0.765 vs critic-2's 0.806) and the audience effect (drafting for an auditor produces fuller drafts) — variants may need to state the completeness expectation explicitly to replace it.
+
 ### Screen models
 
 Every variant screens on two drafters, named `<exp>` and `<exp>-sol`:
@@ -46,7 +50,7 @@ Every variant screens on two drafters, named `<exp>` and `<exp>-sol`:
 
 No Anthropic drafters this round (if that changes: the `request_timeout=1800` fix lives uncommitted in the `critic-2-opus48` worktree and is mandatory). If a winning variant brings sol to parity, screen terra/luna (cheaper) on it as a possible cost win.
 
-**First run of the round:** sol-medium baseline on unmodified `exp/critic-2` — subset first, full 9 weeks if the subset is sane — so variants have a sol reference. The drafter model/effort are env-overridable on main (`OPINION_AGENT_MODEL` / `OPINION_AGENT_REASONING_EFFORT`, shell env only — `.env` loads too late), so one worktree runs both screen models with no config edits; cherry-pick or rebase that config commit into experiment branches, which fork from `exp/critic-2`, not main.
+**First run of the round:** sol-medium baseline on the unmodified round base `exp/explicit-base` — subset first, full 9 weeks if the subset is sane — so variants have a sol reference. The drafter model/effort are env-overridable (`OPINION_AGENT_MODEL` / `OPINION_AGENT_REASONING_EFFORT`, shell env only — `.env` loads too late; already on the round base), so one worktree runs both screen models with no config edits.
 
 ## Screening Plan
 
@@ -56,6 +60,7 @@ No Anthropic drafters this round (if that changes: the `request_timeout=1800` fi
   | model | subset baseline | full-run |
   | --- | --- | --- |
   | gpt-5.5 medium (critic-2, n=4) | **0.854** (runs 0.900 / 0.817 / 0.800 / 0.900) | 0.865 |
+  | gpt-5.5 medium (no-critic round base, n=2) | **0.767** (runs 0.817 / 0.717; W12-03 fails both — the critic save) | 0.806 |
   | gpt-5.6-sol medium | not yet run | — |
   | opus-4.8 high (n=1, reference) | 0.75 | 0.819 |
   | luna high (n=1) | 0.55 | 0.681 |

@@ -88,7 +88,7 @@ The current best starts as `main` (the committed eval harness with unmodified pr
    git worktree add .worktrees/<exp> -b exp/<exp> <current-best-branch>   # use main for the first round
    cp .env .worktrees/<exp>/.env
    ```
-   Branching from the current-best branch inherits every earlier promoted change.
+   Branching from the current-best branch inherits every earlier promoted change. When `eval/STATUS.md` pins a round base branch (e.g. a critic-less base), branch from that instead; the promotion bar still comes from the ledger header.
 3. In the worktree, edit the minimal files needed for the hypothesis, respecting the anti-leakage rules. Prefer `prompts.py` and/or `RULES.md`; use agent/critic harness edits only when the experiment is about critic behavior, critic context, proposal routing, or coverage.
 4. From the main checkout, run the leakage tripwire: `uv run python eval/check_leakage.py .worktrees/<exp>`. It flags word n-grams newly added to the lever files (relative to main) that also appear in the test set. Review every hit and generalize any real leak before proceeding. It only catches verbatim and near-verbatim leaks, so the anti-leakage rules above still apply in full.
 5. Commit the change to the experiment's own branch — never main: `git -C .worktrees/<exp> commit -am "exp/<exp>: <hypothesis>"`. Committing is what lets a later experiment build on this one.
