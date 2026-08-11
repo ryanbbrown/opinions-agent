@@ -4,72 +4,38 @@ This is the current handoff for eval optimization. Rewrite it as the state chang
 
 ## Current State
 
-The current best agent is **`exp/critic-2`**, drafter `openai:gpt-5.5` at **medium** effort (`config.py`). Score to beat: **0.865** pooled `opinion_quality` under scoring version **`2026-07-10-coverage-concepts`**, holding precision ≥ 0.50.
+The current best lineage is the **structural-explicitness stack** (`exp/explicit-duty` → `exp/explicit-routing`), drafter **`openai:gpt-5.6-sol` at medium effort** — Ryan dropped gpt-5.5 mid-round (2026-07-12: "no need for gpt-5.5 anymore, let's just use sol"). Scoring version **`2026-07-10-coverage-concepts`**; all comparisons via `-rs-0710f` rescores. **Precision no longer gates** (Ryan, 2026-07-12: rejecting a bad proposal is cheap; the old ≥0.50 floor is retired as a promotion criterion — still reported). **The primary quality number is the target-weighted raw fraction (x/33 per full run)**, not the Braintrust headline (Ryan, 2026-07-21): the headline is a mean of week means — one case per week, so a 3-target week weighs like a 5-target week and single-run headlines drift from the raw fraction by up to ~0.015. Braintrust's SDK caps per-case scores at 1.0, so the headline itself cannot be made target-weighted with week-cases; instead `run_opinion_eval`/`rescore_opinion_eval` now print `opinion_quality (target-weighted): x/y` after every run and rescore, and that is the number to report and compare.
 
-All five metrics (mean across weeks; `opinion_quality` pooled by week; `keep-the-list` shown as the prompt-only ceiling):
+Full 9-week `opinion_quality`, the round's three live candidates (raw pass counts in parentheses; 33 targets/run):
 
-| metric | baseline-r1 | keep-the-list (pooled, 3 runs) | critic-2 (pooled, 4 runs) |
-| --- | --- | --- | --- |
-| opinion_quality | 0.562 | 0.825 | **0.865** |
-| opinion_attempted | 0.944 | **0.979** | 0.959 |
-| evidence_recall | 0.877 | 0.967 | **0.990** |
-| evidence_precision | 0.575 | 0.532 | 0.521 |
-| opinion_brevity | 0.939 | 0.781 | 0.705 |
+| variant | per-run (x/33) | pooled raw | headline pooled | min | max |
+| --- | --- | --- | --- | --- | --- |
+| `exp/explicit-routing` (no critic, n=3) | 31 / 26 / 31 | 88/99 = 0.889 | 0.899 | 26/33 | 31/33 |
+| `exp/explicit-critic` (cited-scope critic, n=3) | 29 / 30 / 28 | 87/99 = 0.879 | 0.885 | 28/33 | 30/33 |
+| `exp/explicit-critic-docscope` (same-document critic, n=6) | 30 / 29 / 29 / 29 / 33 / 28 | **178/198 = 0.899** | 0.906 | 28/33 | **33/33** |
 
-Per-run critic-2 `opinion_quality`: {0.887, 0.846, 0.806, 0.919}. Canonical rescore experiments: `baseline-r1-rs-0710f`, `critic-2-r{1..4}-rs-0710f`, `keep-the-list-r{1..3}-rs-2026-07-10` (the plain `-rs-2026-07-10` critic-2/baseline experiments are stale; use the `-0710f` set).
-
-Two questions were settled 2026-07-12 (full entries in the ledger):
-
-- **Critic ablation (no-critic, n=2):** removing the critic costs −0.06 mean but drops the floor below any critic-2 run (0.765 vs 0.806) and loosens `opinion_attempted`; opinions get shorter. The critic is retained as a **floor/stability lever**, not a mean lever. The remaining headroom is in first-draft formation, not critique.
-- **Drafter-model screen:** luna-high 0.681, terra-medium 0.388 (coverage collapse), opus-4.8-high 0.819 (0.936 on the 7 weeks it engaged, but refused all of W04 and wrote at ~2.8× golden length). Every non-gpt-5.5 failure is an **implicit-expectation failure** — coverage duty, eligibility threshold, length register — not a capability failure. gpt-5.5-medium stays the drafter.
+The r5–r7 replicates (Ryan-directed floor/peak checks) sharpened the picture in both directions. Peaks: not exclusive to the no-critic variant — docscope r6 posted the lineage's **only perfect full run (33/33)**, including both chronic W13 targets. Floor: r7 dipped to a new docscope low of 28/33 = 0.848 (misses: chronic W13-02, flippy W11-02, residual W11-04, plus W10-02 and W08-04 flips — W08-04 being the very class the docscope widening targets), so docscope's min now **ties** explicit-critic's rather than beating it, staying 2 targets above the no-critic 26/33 draw. Net at n=6: docscope leads on mean and peak, ties on floor, and the early "tightest spread" claim was partly a small-n artifact — single-run σ≈0.06 noise dominates everything except the traced fix: **W12-03 has passed all seven docscope runs** (subset + 6 fulls) after failing 3 of the prior 6 sol runs. Reference anchors: gpt-5.5 on explicit-routing full 0.950 (n=1, no re-runs by directive); terra on explicit-routing 0.894/0.806 pooled 0.850 (n=2, parked — terra omits evidence IDs and quotes document summaries as "Article — null", so recall/precision are meaningless and OPINIONS_SOURCES attribution would break; needs a copy-IDs-verbatim fix before more terra runs).
 
 ## Current Round: structural explicitness rewrite (started 2026-07-12)
 
-Working thesis: the prompt is an accretion of loop-era patches that works because gpt-5.5's natural behavior happens to match its implicit expectations — "redundancy is load-bearing" (lean-overhaul) is the signature of an under-structured prompt. Every promoted change in the ledger made an implicit behavior explicit; every failed leanness pass deleted structure the agent was using. The round's goal is to restate the prompt as explicit, well-organized contracts **without creating a sprawling, over-detailed mess** — see GOAL "Keep the prompts lean" for the explicit-≠-long discipline.
+Round history (variants 1–6, full entries in the ledger): the explicit duty contract (`explicit-duty`) plus drafter-side update routing (`explicit-routing`) lifted both screen models to 0.950 full-run quality without a critic — the round's central result. Variants 3–6 (deterministic reads, citation scope, selectivity, note-seeding) each held quality and taught a mechanism, but their purpose was the precision floor, which Ryan then retired; the stack tip for those fixes is `exp/explicit-notes` (quality 0.877 full on gpt-5.5), currently not the promotion path.
 
-Behaviors currently implicit that candidate variants should make explicit (one experiment or small coherent group each; generalized wording only, per the anti-leakage rules):
+**Variant 7 (`exp/explicit-critic`, current tip under evaluation):** a thinharness **subagent** critic on top of explicit-routing — one call per proposal in parallel, sole tool a typed `get_evidence(evidence_ids)` fetch over the week's selected highlights; drafter passes draft text + cited IDs as free text; critic model inherits the drafter. Omission-only spine from critic-2 plus polarity and adjacent-move rules. Results above. Trace-audit findings that frame the next decision:
 
-1. **The proposal duty and per-cluster coverage expectation** — one proposal per argued highlight cluster; a selected week almost never legitimately yields zero. This is the terra/opus failure mode, and the ledger already proved the duty sentence is a single point of failure (lean-overhaul-2/2b).
-2. **The eligibility threshold** — when a refusal is legitimate vs. the opus-style whole-week `proposals: []` shutout.
-3. **A deterministic read-policy decision rule** — the current "visibly signals missing context" trigger list is a judgment call and is one of the two variance engines named in `eval/generation_determinism.md`.
-4. **Update routing drafter-side** — search OPINIONS.md for the cluster's named anchors *before drafting* and propose a revision on a hit. Never tried on the drafter (only critic-side, which converted W13-05 inconsistently); opus converts W13-05, so it is prompt-addressable.
-5. **The target register stated as fact** (golden mean ~34 words), not as compression pressure — pressure failed twice (compact-opinions, compact-default).
+- **The critic works where citations are right:** four r1 REVISEs injected the judged target's missing load-bearing concept and the target passed (W04-01, W10-01, W10-03, W13-01); the unresolved-ID guardrail caught two fabricated citation sets. 32–34% REVISE rate — engaged, not rubber-stamping.
+- **It cannot see citation-scope loss:** counterfactual replay of the 0.796 run's five misses through the critic saved only W04-04 — in the others the drafter dropped the concept *and* its citation together, so the cited-scope critic correctly READYs a coherent narrower claim.
+- **The recurring miss (3× identical):** W12-03's "hand agents the routine work" half — present only in the parent document's **summary**, never in a selected highlight; drafter cites the one in-the-loop highlight, critic READYs. W11-04's "not pay/title/brand" list is the same shape (summary/body only).
+- **Revise-type noise:** revised opinions inherit claims backed by prior-week sources the critic can't resolve; it flags the inherited half as unsupported. Needs revision-scoping in the critic prompt if kept.
 
-When a variant does badly — a week collapses, a model diverges, a screen regresses — **investigate the traces before designing the next variant** (per-target judge notes via `inspect_experiment.py`, Braintrust traces, worktree `.runs` DBs) and attribute the failure: refusal / routing / dropped concept / weakened paraphrase / infra error. GOAL "Reading results" makes this a protocol duty.
-
-### Round base
-
-Experiments this round branch from **`exp/explicit-base`** (worktree `.worktrees/explicit-base`): critic-2 prompts with the **critic step removed** (commit `90e23c0` on `exp/critic-2-no-critic`) plus the env-override config commit (`707d569`). Rationale: the critic rescues exactly the omissions the rewrite tries to prevent in the first draft, so it masks draft-formation deltas between variants — critic-less runs measure the rewrite directly, and cost less. The promotion bar stays critic-2's 0.865; a critic-less variant that clears it is a double win (simpler and better). If a winning rewrite lands close-but-below, re-adding the critic on top is an explicit composition experiment. What removal gives up: the floor (no-critic floor 0.765 vs critic-2's 0.806) and the audience effect (drafting for an auditor produces fuller drafts) — variants may need to state the completeness expectation explicitly to replace it.
-
-### Screen models
-
-Every variant screens on two drafters, named `<exp>` and `<exp>-sol`:
-
-- **gpt-5.5 medium** — the promotion target. Promotion is unchanged: full 9-week replicates vs 0.865.
-- **gpt-5.6-sol medium** — same cost, generally more capable; the explicitness diagnostic. If sol lags gpt-5.5 on the same prompt, the prompt is leaning on gpt-5.5-specific implicit behavior; a variant that closes sol's gap while holding gpt-5.5 is evidence the rewrite generalizes. Sol never gates promotion by itself.
-
-No Anthropic drafters this round (if that changes: the `request_timeout=1800` fix lives uncommitted in the `critic-2-opus48` worktree and is mandatory). If a winning variant brings sol to parity, screen terra/luna (cheaper) on it as a possible cost win.
-
-**First run of the round:** sol-medium baseline on the unmodified round base `exp/explicit-base` — subset first, full 9 weeks if the subset is sane — so variants have a sol reference. The drafter model/effort are env-overridable (`OPINION_AGENT_MODEL` / `OPINION_AGENT_REASONING_EFFORT`, shell env only — `.env` loads too late; already on the round base), so one worktree runs both screen models with no config edits.
+**Variant 8 (`exp/explicit-critic-docscope`, current tip):** Ryan-directed widening of `get_evidence` to same-document context — per cited row's document, the document summary plus uncited selected rows from that document; no article bodies. Three critic-prompt iterations were required before the mechanism fired (ledger entry has the smoke/replay evidence): "complete the argument" framing for the new context, a complementary-split case added to the whole-claim check, and a bullet-direction rule (REVISE bullets point from visible evidence to draft; support-checking draft claims is forbidden — that was the critic's natural attractor whenever unresolved prior-week IDs appeared). Critic engagement 45–46% REVISE (vs 32–34% cited-scope) with no quality damage. Residual classes: W11-04-style two-role named specifics (brand is an asset in the cited highlight, a rejected optimization target in the summary — the critic READY'd it once with the summary in view; needs upstream citation/clustering work, not critic scope) and the chronic W13-02/W13-04 pair — though r6 passed all three, so none are hard-blocked. **Promotion decision is Ryan's call — pending.** No clean explicit-routing-on-proxy datapoint exists (both attempts were killed by upstream provider failures and voided), so the no-critic line's numbers are all direct-API; the backend confound is noted but docscope's own 5 runs are all proxy.
 
 ## Screening Plan
 
-- **Screen subset: `W04 W10 W12 W13`** (16/33 targets, ~48% full-run cost). Rationale and the full per-week per-model table are in the ledger's 2026-07-12 subset-baselines entry. In short: W04 = universal hard week + refusal mode + prompt-structure canary; W13 = routing (W13-05) + named-specific class; W10/W12 = cheap discriminators where weak models collapse, and W12 is the critic-floor tripwire.
-- **Subset baselines** (`opinion_quality`, mean of week means):
-
-  | model | subset baseline | full-run |
-  | --- | --- | --- |
-  | gpt-5.5 medium (critic-2, n=4) | **0.854** (runs 0.900 / 0.817 / 0.800 / 0.900) | 0.865 |
-  | gpt-5.5 medium (no-critic round base, n=2) | **0.767** (runs 0.817 / 0.717; W12-03 fails both — the critic save) | 0.806 |
-  | gpt-5.6-sol medium | not yet run | — |
-  | opus-4.8 high (n=1, reference) | 0.75 | 0.819 |
-  | luna high (n=1) | 0.55 | 0.681 |
-  | terra medium (n=1) | 0.20 | 0.388 |
-
-- Subset noise: one target flip in a 3-target week moves the mean 0.083; treat ±0.05–0.10 as the band. Subset screens are breakage tripwires, never validation — promotion always goes through full 9-week gpt-5.5 replicates.
-- **Micro-screen `W04 W12`** (8 targets; gpt-5.5 pooled 0.85, runs 0.90/0.90/0.70/0.90) for rapid iteration only; graduate anything interesting to the 4-week subset.
-- The old strong-week screen (`W06 W10 W11 W12`) is **deprecated** — it flattered the lean-overhaul family twice.
+- Sol medium is the only screen model (single subset screen per variant); promotion = full 9-week sol replicates.
+- **Screen subset: `W04 W10 W12 W13`** (16/33 targets, ~48% full-run cost); sol subset anchor **0.950** (explicit-routing and explicit-critic both hit it). Subset noise: one target flip in a 3-target week moves the mean 0.083; treat ±0.05–0.10 as the band. Subset screens are tripwires, never validation.
+- **Micro-screen `W04 W12`** for rapid iteration only. The old strong-week screen (`W06 W10 W11 W12`) is deprecated.
 - Full eval: `W04 W05 W06 W07 W08 W10 W11 W12 W13` (W07 has no targets, precision only).
+- Sol's chronic misses on this lineage are **W13-02 / W13-04**; W11-02 has failed 2 of 3 critic runs. Everything else flips run-to-run (σ≈0.06 single-run from per-target flips at 33 targets).
 
 ## The judge
 
@@ -79,22 +45,17 @@ No Anthropic drafters this round (if that changes: the `request_timeout=1800` fi
 
 Every W04–W13 core-concept list is finalized — no `(open:)` flags remain. Cross-target rulings live in the "Judge rules" section at the top of `opinion_targets.md`. Not-core lists never reach the judge (only `required_concepts` do), so any leniency must be written into the concept wording. Simplified-canonical **candidates** are proposed inline in the `.md` (22 opinions) but not adopted — promoting them into the `.jsonl` `ideal_opinion` fields is a Ryan decision and would move stance-reference verdicts.
 
-## Current Diagnosis
-
-gpt-5.5 critic-2 hard weeks: W04 0.70, W08 0.75, W13 0.80; W11/W12 are at 1.00. Residual failure buckets:
-
-- **Routing / coverage (no proposal produced):** W13-05 (0/4, never matched), W05-03 (2/4). Highest-leverage bucket; explicitness items 1–2 and 4 target it directly.
-- **Concept-coverage fails (judge verdicts):** W04-05 (1/4), W08-02 (1/4), W06-01 (2/4) are the repeat offenders — the low-convergence, article-body-dependent tail per `eval/generation_determinism.md`; the read-policy rule (item 3) is the lever aimed at them.
-- **Guardrails:** critic-2 precision 0.521 (floor 0.50) and brevity 0.705; a mean-raising change must not push precision below 0.50, and brevity should be watched, not optimized by pressure.
-
 ## Ops notes
 
-- When a run posts a surprising aggregate, verify per-week `opinion_quality` coverage before comparing — an agent- or judge-side API failure leaves that week null and silently shrinks the mean's denominator. The tell: the reported mean disagrees with the mean implied by per-target verdicts.
-- Cap concurrent full runs at 2 (three drew OpenAI 429s that killed week rows). Give concurrent processes distinct `RUNS_DIR` values — a shared run dir voided the first two no-critic ablation runs.
-- `eval rescore --from-experiment <name>` re-judges stored generations without re-running the agent; use it after any concept or judge change. Pass `--experiment` to avoid auto-name collisions.
+- **All drafter/critic LLM calls route through `cproxy` on port 8113** (ChatGPT-subscription OAuth, no API credits): run `cproxy serve --port 8113 --chains-max 500` as the persistent background process, then launch evals through `cproxy run` with the same options. The 500-chain capacity prevents concurrent eval cases from evicting resumable chains. Ports 8111/8112 are Ryan's other work — never touch. Judge calls are safe because scorers pin `base_url` to the Braintrust proxy. Worktrees have no local corpus — also pass `OPINIONS_DATA_DIR=<main>/.readwise`.
+- ChatGPT-backend upstream 5xx/transport errors are a transient run-killer: `grep -c "provider request failed"` in the run log before rescoring; a run with killed weeks cannot be rescored (rows missing output) — void it and rerun.
+- When a run posts a surprising aggregate, verify per-week `opinion_quality` coverage before comparing — the reported mean must match the verdict-implied mean from per-target verdicts.
+- Cap concurrent full runs at 2; give concurrent runs distinct `RUNS_DIR` values.
+- `rescore_opinion_eval(settings, source_experiment=..., experiment_name='<name>-rs-0710f')` from main re-judges stored generations under the current judge.
+- thinharness pinned at **v0.5.3**; the `subagent` gateway must be listed in `builtin_tools` or configured subagents are silently unreachable.
 
 ## Stop Rule
 
 Do not stop after a few ordinary failures. Stop this phase only after **five consecutive experiments** fail to produce anything interesting: no promotion, no clear targeted-screen improvement, no useful mechanism insight, and no simplifying hold of current performance.
 
-Current uninteresting-failure streak: **0** — reset by the 2026-07-12 round kickoff (critic ablation settled, model failure modes attributed, screen subset re-derived under the coverage judge).
+Current uninteresting-failure streak: **0** — variant 7 raised the floor and produced the citation-scope attribution plus the variant-8 mechanism.

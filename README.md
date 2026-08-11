@@ -76,37 +76,59 @@ have at least one machine-readable source row.
 ## Local Setup
 
 ```bash
+uv tool install --editable ../cproxy
+codex login status
 uv sync
 cp .env.example .env
 docker compose up -d postgres
 uv run alembic upgrade head      # or: uv run opinions-agent init-db (creates tables directly)
 ```
 
-Required local variables: `DATABASE_URL`, `READWISE_TOKEN`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_CHAT_ID`,
-`OPENAI_API_KEY`, and the `OPINIONS_*` repo settings shown in `.env.example`. The ThinHarness agent model is set in
-code to `openai:gpt-5.5` with medium reasoning effort. `BRAINTRUST_API_KEY` and `BRAINTRUST_PROJECT_ID` enable
-Braintrust tracing and are required for `eval run`; traces are stamped with an environment tag (`dev` locally, `prod`
-on Railway, overridable via `OPINIONS_ENVIRONMENT`).
+Required local variables: `DATABASE_URL`, `READWISE_TOKEN`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_CHAT_ID`, and the `OPINIONS_*` repo settings shown in `.env.example`. Local ThinHarness calls use Codex CLI authentication through `cproxy`, so they do not need `OPENAI_API_KEY`. The agent model defaults to `openai:gpt-5.5` with medium reasoning effort. `BRAINTRUST_API_KEY` and `BRAINTRUST_PROJECT_ID` enable Braintrust tracing and are required for `eval run`; traces are stamped with an environment tag (`dev` locally, `prod` on Railway, overridable via `OPINIONS_ENVIRONMENT`).
 
 Safety default: `OPINIONS_TARGET_FILE` defaults to `TEST_OPINIONS.md` so local runs never touch the real
 `OPINIONS.md` by accident. Production (Railway) must set `OPINIONS_TARGET_FILE=OPINIONS.md` explicitly. Note that
 approvals push to `OPINIONS_REPO_URL`, which defaults to the real repo — point `OPINIONS_REPO_DIR`/`OPINIONS_REPO_URL`
 at a disposable repo when experimenting.
 
+### Local model access
+
+Run model-backed commands through `cproxy` on the opinions-agent port:
+
+```bash
+cproxy run --port 8113 --chains-max 500 -- uv run opinions-agent sample-run W04
+cproxy run --port 8113 --chains-max 500 -- uv run opinions-agent eval run --weeks W04 W05
+```
+
+The 500-chain capacity supports concurrent eval cases and replaces the patched proxy previously used for evals. A one-shot command can let `cproxy run` manage the proxy lifetime.
+
+Conversations that resume from another process need the same proxy to remain alive because `cproxy` holds response chains in memory. Keep it running in one terminal, then use `cproxy run` for every model-backed app command so each child receives the proxy environment:
+
+```bash
+# Terminal 1
+cproxy serve --port 8113 --chains-max 500
+
+# Terminal 2
+cproxy run --port 8113 --chains-max 500 -- uv run opinions-agent serve
+cproxy run --port 8113 --chains-max 500 -- uv run opinions-agent opinion-run
+```
+
+Do not restart `cproxy` while a local run is awaiting Telegram input; a restarted proxy cannot resume the prior in-memory response chain.
+
 ## Commands
 
 ```bash
-uv run opinions-agent serve            # FastAPI web service (Telegram webhook + /healthz)
+cproxy run --port 8113 --chains-max 500 -- uv run opinions-agent serve
 uv run opinions-agent init-runtime     # ensure data dirs, memory files, repo checkout, DB migrations
 uv run opinions-agent sync             # Reader -> filesystem corpus
-uv run opinions-agent opinion-run      # sync + select window + start/resume Telegram approval loop
-uv run opinions-agent sample-run W04   # local disposable run against copied artifacts under .runs/active/
+cproxy run --port 8113 --chains-max 500 -- uv run opinions-agent opinion-run
+cproxy run --port 8113 --chains-max 500 -- uv run opinions-agent sample-run W04
 uv run opinions-agent sample-session init review --opinions-file OPINIONS.md
-uv run opinions-agent sample-session run review W04 --send-telegram
-uv run opinions-agent sample-session poll review
-uv run opinions-agent eval run --weeks W04 W05   # Braintrust eval of the initial proposal phase
+cproxy run --port 8113 --chains-max 500 -- uv run opinions-agent sample-session run review W04 --send-telegram
+cproxy run --port 8113 --chains-max 500 -- uv run opinions-agent sample-session poll review
+cproxy run --port 8113 --chains-max 500 -- uv run opinions-agent eval run --weeks W04 W05
 uv run opinions-agent abandon-run ID   # abandon a stuck pending run (cursor does not advance)
-uv run opinions-agent telegram-poll    # local alternative to the webhook
+cproxy run --port 8113 --chains-max 500 -- uv run opinions-agent telegram-poll
 uv run opinions-agent set-telegram-webhook https://your-service.up.railway.app/telegram/webhook
 ```
 
@@ -145,6 +167,7 @@ Deploys build from this repo; the opinions repo and all durable files live outsi
   runtime work (`init-runtime`), never build time.
 - Set `OPINIONS_REPO_URL` to a token-backed HTTPS URL; the repo is cloned/updated at runtime into
   `OPINIONS_REPO_DIR`. Set `OPINIONS_TARGET_FILE=OPINIONS.md` and `OPINIONS_SOURCES_FILE=OPINIONS_SOURCES.jsonl`.
+- Set `OPENAI_API_KEY` for direct model access. Railway does not use local-only `cproxy` or Codex CLI authentication.
 - Run `uv run opinions-agent init-runtime` on deploy (pre-start), then `serve`.
 - Schedule `uv run opinions-agent opinion-run` weekly (Railway cron); biweekly is a schedule change, not a
   storage change. The scheduler exits cleanly if a previous run is still pending approval.
@@ -178,22 +201,12 @@ The e2e test uses a disposable local git remote, the deterministic agent, and si
 developer completion gate for real ThinHarness/native-output behavior is isolated behind an explicit environment flag:
 
 ```bash
-OPINIONS_RUN_REAL_E2E=1 uv run pytest tests/test_real_e2e_optional.py
+OPINIONS_RUN_REAL_E2E=1 cproxy run --port 8113 --chains-max 500 -- uv run pytest tests/test_real_e2e_optional.py
 ```
 
 ## Evals
 
-`eval/opinion_targets.jsonl` is the checked-in ground truth converted from `EVAL_TARGETS.md`: per eval week it lists
-canonical target opinions (ideal text, required source evidence IDs, source quotes) and the selected evidence that
-should not become opinions. `uv run opinions-agent eval run --weeks W04 ... W13` runs the initial proposal phase for
-each week in a disposable sample run (fake Telegram, no approvals, seeded with the base `OPINIONS.md` plus canonical
-targets from earlier eval weeks), parses the proposal messages, and streams a Braintrust experiment with three scores:
-`evidence_recall` and `evidence_precision` (deterministic evidence classification) and `opinion_quality` (binary LLM
-judge via the Braintrust proxy: pass only when a generated opinion contains all core concepts of the canonical one;
-extra content is fine). The targets file also syncs to the `opinion-targets` Braintrust dataset for browsing; the
-checked-in file remains the source of truth. Experiment rows are tagged with their week, and agent traces nest under
-the experiment. Flags: `--deterministic-agent` (pipeline smoke; replaces the agent's model calls, but the judge still
-calls the Braintrust proxy for weeks with targets), `--experiment`, `--max-concurrency`.
+`eval/opinion_targets.jsonl` is the checked-in ground truth converted from `EVAL_TARGETS.md`: per eval week it lists canonical target opinions (ideal text, required source evidence IDs, source quotes) and the selected evidence that should not become opinions. `cproxy run --port 8113 --chains-max 500 -- uv run opinions-agent eval run --weeks W04 ... W13` runs the initial proposal phase for each week in a disposable sample run (fake Telegram, no approvals, seeded with the base `OPINIONS.md` plus canonical targets from earlier eval weeks), parses the proposal messages, and streams a Braintrust experiment with three scores: `evidence_recall` and `evidence_precision` (deterministic evidence classification) and `opinion_quality` (binary LLM judge via the Braintrust proxy: pass only when a generated opinion contains all core concepts of the canonical one; extra content is fine). The targets file also syncs to the `opinion-targets` Braintrust dataset for browsing; the checked-in file remains the source of truth. Experiment rows are tagged with their week, and agent traces nest under the experiment. Flags: `--deterministic-agent` (pipeline smoke; replaces the agent's model calls, but the judge still calls the Braintrust proxy for weeks with targets), `--experiment`, `--max-concurrency`.
 
 `uv run opinions-agent eval rescore --from-experiment NAME` re-scores an existing experiment's stored outputs into a
 new experiment without re-running the agent — the cheap loop for judge calibration.

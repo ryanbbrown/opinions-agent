@@ -300,6 +300,20 @@ REAL_CORPUS = Path(__file__).resolve().parents[1] / ".readwise"
 
 
 @pytest.mark.skipif(not REAL_CORPUS.exists(), reason="local .readwise corpus not present")
+def test_target_weighted_quality_weights_targets_not_weeks():
+    from types import SimpleNamespace
+
+    from opinions_agent.evals.runner import summarize_target_weighted_quality
+
+    results = [
+        SimpleNamespace(scores={"opinion_quality": 1 / 3}, expected={"targets": [{}, {}, {}]}),
+        SimpleNamespace(scores={"opinion_quality": 1.0}, expected={"targets": [{}] * 5}),
+        SimpleNamespace(scores={"opinion_quality": None}, expected={"targets": []}),
+    ]
+    assert summarize_target_weighted_quality(results) == "opinion_quality (target-weighted): 6/8 = 0.7500"
+    assert summarize_target_weighted_quality([results[2]]) is None
+
+
 def test_checked_in_targets_partition_matches_corpus():
     cases = load_week_cases()
     corpus = CorpusPaths(REAL_CORPUS)

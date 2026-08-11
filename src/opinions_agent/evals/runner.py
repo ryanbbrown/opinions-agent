@@ -36,6 +36,26 @@ TARGETS_DATASET_NAME = "opinion-targets"
 SCORING_VERSION = "2026-07-10-coverage-concepts"
 
 
+def summarize_target_weighted_quality(results) -> str | None:
+    """Aggregate opinion_quality weighting every target equally, for the end-of-run summary line.
+
+    The Braintrust experiment headline is a mean of week means (one case per week), so a
+    3-target week weighs the same as a 5-target week and the headline drifts from the raw
+    pass fraction. This target-weighted number is the primary quality metric for reporting.
+    """
+    passed = total = 0
+    for result in results:
+        score = (result.scores or {}).get("opinion_quality")
+        targets = (result.expected or {}).get("targets") or []
+        if score is None or not targets:
+            continue
+        passed += round(score * len(targets))
+        total += len(targets)
+    if not total:
+        return None
+    return f"opinion_quality (target-weighted): {passed}/{total} = {passed / total:.4f}"
+
+
 async def run_opinion_eval(
     settings: Settings,
     weeks: list[str],
@@ -104,6 +124,9 @@ async def run_opinion_eval(
         max_concurrency=max_concurrency,
     )
     flush_braintrust_tracing()
+    summary_line = summarize_target_weighted_quality(result.results)
+    if summary_line:
+        print(summary_line)
     return result
 
 
@@ -168,6 +191,9 @@ async def rescore_opinion_eval(
         },
         max_concurrency=max_concurrency,
     )
+    summary_line = summarize_target_weighted_quality(result.results)
+    if summary_line:
+        print(summary_line)
     return result
 
 
