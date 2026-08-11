@@ -16,7 +16,24 @@ Full 9-week `opinion_quality`, the round's three live candidates (raw pass count
 
 The r5–r7 replicates (Ryan-directed floor/peak checks) sharpened the picture in both directions. Peaks: not exclusive to the no-critic variant — docscope r6 posted the lineage's **only perfect full run (33/33)**, including both chronic W13 targets. Floor: r7 dipped to a new docscope low of 28/33 = 0.848 (misses: chronic W13-02, flippy W11-02, residual W11-04, plus W10-02 and W08-04 flips — W08-04 being the very class the docscope widening targets), so docscope's min now **ties** explicit-critic's rather than beating it, staying 2 targets above the no-critic 26/33 draw. Net at n=6: docscope leads on mean and peak, ties on floor, and the early "tightest spread" claim was partly a small-n artifact — single-run σ≈0.06 noise dominates everything except the traced fix: **W12-03 has passed all seven docscope runs** (subset + 6 fulls) after failing 3 of the prior 6 sol runs. Reference anchors: gpt-5.5 on explicit-routing full 0.950 (n=1, no re-runs by directive); terra on explicit-routing 0.894/0.806 pooled 0.850 (n=2, parked — terra omits evidence IDs and quotes document summaries as "Article — null", so recall/precision are meaningless and OPINIONS_SOURCES attribution would break; needs a copy-IDs-verbatim fix before more terra runs).
 
-## Current Round: structural explicitness rewrite (started 2026-07-12)
+## Current Round: brevity / scaffolding removal (started 2026-08-09)
+
+Docscope proposals run **1.81x golden length**, so only 3/33 fit in a tweet against 30/33 of the goldens — which matters because Ryan wants to post these. The excess is **not** concept coverage (corr with required-concept count = -0.04); it is framing: a premise before the claim, a justification or restatement after it, and other opinions' claims reused as setup. But naive compression is not free: pooled over 6 docscope full runs, of the 12 targets that both passed and failed, the passing attempt was longer in **12/12** (mean +15.5 words).
+
+Three RULES.md-only variants, all subset screens (16 targets) on sol medium, rescored from main:
+
+| variant | quality | length | tweetable |
+| --- | --- | --- | --- |
+| docscope baseline | 14/16 | 1.84x | 0/16 |
+| `exp/brevity-scope` (cut framing) | 28/32 = 0.875 (n=2) | 1.50x | 3–4/16 |
+| **`exp/brevity-scope-2`** (+ procedures, + rank fidelity above cutting, + stay-long permission) | **32/32 = 1.000 (n=2)** | 1.63x | 1–4/16 |
+| `exp/brevity-scope-3` (v2 minus stay-long) | 14/16 = 0.875 (n=1) | 1.50x | 5/16 |
+
+**The subset oversold this and the full runs did not replicate it.** Two full 9-week sol runs of `exp/brevity-scope-2` came in at **28/33 and 28/33 → 56/66 = 0.848** (docscope: 178/198 = 0.899, n=6) at **1.68x** length (docscope full-run mean **1.82x**), tweet-fit 5/33 vs ~3/33 and 30/33 for the goldens. So the subset's quality gain disappeared and the length gain shrank from 11% to **7%**. Treat this as the reference case for why subset screens are tripwires, never validation: the effect did not merely get noisier at full size, it inverted.
+
+**Round conclusion: no promotion.** The scaffolding diagnosis held — framing carries no required concept and the worst offenders did shrink — but framing is only ~7% of full-run length. The rest is fidelity-rule material (named anchors, full enumerations, de-compressed abstractions) that the rules deliberately require, and `lean-fidelity` already showed those rules are load-bearing (0.446 when consolidated). Recommended path: keep docscope, and derive tweet-length text from an already-approved opinion as a separate step instead of compressing the belief map to fit a character limit.
+
+## Prior Round: structural explicitness rewrite (2026-07-12 to 2026-08-09)
 
 Round history (variants 1–6, full entries in the ledger): the explicit duty contract (`explicit-duty`) plus drafter-side update routing (`explicit-routing`) lifted both screen models to 0.950 full-run quality without a critic — the round's central result. Variants 3–6 (deterministic reads, citation scope, selectivity, note-seeding) each held quality and taught a mechanism, but their purpose was the precision floor, which Ryan then retired; the stack tip for those fixes is `exp/explicit-notes` (quality 0.877 full on gpt-5.5), currently not the promotion path.
 
