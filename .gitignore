@@ -13,7 +13,7 @@ coverage/
 .readwise/
 .worktrees/
 .archive/
-.reviews/
+.reviews/*
 
 __pycache__/
 .venv/
