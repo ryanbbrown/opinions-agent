@@ -19,7 +19,7 @@ The app owns synchronization, evidence selection, Telegram routing, artifact val
 
 ### Purpose
 
-The filesystem corpus is the durable, readable store of Reader-derived evidence and app-owned workflow cursor state.
+The filesystem corpus is the durable, readable store of Reader-derived evidence. PostgreSQL owns workflow progress.
 
 ### Requirements
 
@@ -30,7 +30,7 @@ The filesystem corpus is the durable, readable store of Reader-derived evidence 
 - CORPUS-5: Highlight-attached Reader note rows are stored on their parent highlight row as note text.
 - CORPUS-6: `raw/reader_<id>.json` stores untouched Reader API payloads for debugging and recovery, but raw payloads are not part of the default agent read surface.
 - CORPUS-7: `documents/reader_<id>.md` stores readable full document content for agent inspection when summaries and selected evidence are insufficient.
-- CORPUS-8: `state.json` stores app-owned sync and workflow cursors, including the Reader watermark and last completed opinion-run window.
+- CORPUS-8: `state.json` stores Reader sync watermarks. It does not decide whether evidence was processed.
 - CORPUS-9: Sync is idempotent and advances `state.json` only after corpus writes succeed.
 - CORPUS-10: `memory/` contains placeholder memory files; no automated memory-writing behavior is implemented.
 - CORPUS-11: Reader documents tagged `backfill` or `.backfill` and their descendant highlights/notes are excluded from local backtest corpora and should not be selected for opinion runs.
@@ -60,6 +60,19 @@ Each opinion run deterministically selects the evidence window, writes an inspec
 - RUN-13: Local sample runs are disposable run-scoped executions. They copy selected opinion artifacts and corpus context under the run directory, point the agent at those copied paths, and must not grant the agent read/write access to the original opinion repository files.
 - RUN-14: Human-readable sample run IDs may include the start timestamp and requested corpus week label so local runs can be inspected chronologically.
 - RUN-15: Local sample sessions are disposable session-scoped executions. They copy opinion artifacts and corpus context once, keep database state, run artifacts, memory, decisions, and local git commits under the session directory, and let later week runs start from earlier approved session changes without touching the original opinion repository files.
+- RUN-16: A weekly cycle owns one fixed evidence snapshot and one or more ordered batches.
+- RUN-17: PostgreSQL assigns each evidence ID and content fingerprint to one cycle. Changed content creates a new eligible evidence version.
+- RUN-18: A first deployed cycle requires a fixed launch boundary. Older evidence versions become an ignored baseline.
+- RUN-19: A cycle uses one batch only below both limits of 20 documents and 50 evidence rows.
+- RUN-20: Reaching either limit creates at least two balanced batches. No batch can exceed either limit.
+- RUN-21: The partition keeps documents whole when each batch remains within half to one-and-a-half times its equal row target.
+- RUN-22: The partition can split a document across adjacent batches when whole-document boundaries produce an uneven result.
+- RUN-23: The app writes every batch and fixed same-document critic context before it starts the first run.
+- RUN-24: Later corpus changes cannot change a cycle bundle. Only selected evidence in the current batch is citable.
+- RUN-25: A completed batch queues the next batch after its accepted repository changes are durable.
+- RUN-26: A cycle completes after all batches complete. A cycle with no evidence completes with zero batches.
+- RUN-27: Repeated weekly starts return existing work. An unfinished cycle blocks a later weekly cycle.
+- RUN-28: Newly synced or changed evidence remains eligible even when its source timestamp is before the last cycle end.
 
 ## Agent Runtime Shape
 
@@ -78,6 +91,8 @@ An opinion run is handled as one resumable agent conversation with one bounded t
 - AGENT-7: The app must not commit artifact edits until the agent returns `done`, the same shared validator passes at the commit boundary, and commit/no-op handling succeeds.
 - AGENT-8: If the agent cannot make progress without manual intervention, it returns `blocked`; the app records a terminal blocked or failed run state, sends the explanatory Telegram message, preserves active artifacts for inspection, and does not validate or commit.
 - AGENT-9: A successful `done` run sends a final Telegram completion message after validation and commit/no-op handling. If the agent does not provide one, the app sends a deterministic fallback summary of opinion and evidence row changes.
+- AGENT-10: The agent runs one fidelity critic for each proposed opinion before it sends proposals.
+- AGENT-11: The critic can read cited rows and fixed same-document context. It cannot inspect unrelated documents or edit artifacts.
 
 ## Proposal And Editing Workflow
 
@@ -119,6 +134,8 @@ Telegram provides human approval or revision for proposed conceptual opinion cha
 - TELEGRAM-10: Valid exact `GO` and `SKIP` commands attempt the same atomic `awaiting_user -> running_agent` claim immediately, then route the command into the same agent conversation as user input. The app does not itself decide which conceptual proposals are accepted, deferred, skipped, or ready for file edits.
 - TELEGRAM-11: Free-text messages other than valid replies to stored outbound messages or exact standalone `GO`/`SKIP` commands do not start agent work.
 - TELEGRAM-12: A failed agent resume marks the run failed and records the failure reason.
+- TELEGRAM-13: A successful batch starts the next queued batch automatically. Telegram requests do not wait for that model call.
+- TELEGRAM-14: A stopped cycle sends one generic failure notice. The notice contains no exception text or credential.
 
 ## Opinion Files And Provenance
 
@@ -167,6 +184,11 @@ Approved changes become durable only after the app validates, commits, and pushe
 - GIT-4: A no-op approved durable change produces no commit SHA.
 - GIT-5: Push failures mark the run failed and preserve the local commit for manual recovery.
 - GIT-6: Success-style final Telegram messages are sent only after validation and commit/no-op handling succeed. If validation, commit, or push fails, the app sends an app-authored operational failure message instead of agent success wording.
+- GIT-7: Each batch records its repository baseline before agent edits and requires its writable artifacts to be clean.
+- GIT-8: A run records commit intent, local commit, remote push, and completion as separate durable phases.
+- GIT-9: Restart recovery reconciles stored commit data with local and remote commits before it starts agent work again.
+- GIT-10: Failed edits are archived, and only configured writable artifacts are restored from their recorded baseline.
+- GIT-11: A retry creates a new run for the stored batch. It never repeats a pushed batch.
 
 ## Evals And Observability
 
