@@ -4,8 +4,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-OPINION_AGENT_MODEL = os.environ.get("OPINION_AGENT_MODEL", "openai:gpt-5.5")
-OPINION_AGENT_REASONING_EFFORT = os.environ.get("OPINION_AGENT_REASONING_EFFORT", "medium")
+OPINION_AGENT_MODEL = "openai:gpt-5.6-sol"
+OPINION_AGENT_REASONING_EFFORT = "medium"
 
 
 def load_dotenv(path: Path | str = ".env") -> None:
@@ -51,6 +51,12 @@ class Settings:
     local_tracing_enabled: bool
     use_fake_telegram: bool
     braintrust_parent: str = ""
+    harness_reasoning_effort: str = OPINION_AGENT_REASONING_EFFORT
+    opinions_start_secret: str = ""
+    opinions_start_url: str = ""
+    opinions_git_token: str = ""
+    initial_evidence_after: str = ""
+    volume_mount_path: Path | None = None
 
     @property
     def opinions_target_path(self) -> Path:
@@ -81,7 +87,7 @@ def get_settings() -> Settings:
         telegram_allowed_chat_id=int(allowed_chat) if allowed_chat else None,
         telegram_webhook_secret=_env("TELEGRAM_WEBHOOK_SECRET"),
         readwise_token=_env("READWISE_TOKEN"),
-        harness_model=OPINION_AGENT_MODEL,
+        harness_model=_env("OPINION_AGENT_MODEL", OPINION_AGENT_MODEL),
         braintrust_api_key=_env("BRAINTRUST_API_KEY"),
         braintrust_project_id=_env("BRAINTRUST_PROJECT_ID"),
         environment=_env("OPINIONS_ENVIRONMENT") or ("prod" if _env("RAILWAY_VOLUME_MOUNT_PATH") else "dev"),
@@ -98,4 +104,49 @@ def get_settings() -> Settings:
         local_trace_dir=Path(_env("THINHARNESS_LOCAL_TRACE_DIR", ".traces")),
         local_tracing_enabled=_env("THINHARNESS_DISABLE_LOCAL_TRACING", "").lower() not in {"1", "true", "yes"},
         use_fake_telegram=_env("OPINIONS_FAKE_TELEGRAM", "").lower() in {"1", "true", "yes"},
+        harness_reasoning_effort=_env("OPINION_AGENT_REASONING_EFFORT", OPINION_AGENT_REASONING_EFFORT),
+        opinions_start_secret=_env("OPINIONS_START_SECRET"),
+        opinions_start_url=_env("OPINIONS_START_URL"),
+        opinions_git_token=_env("OPINIONS_GIT_TOKEN"),
+        initial_evidence_after=_env("OPINIONS_INITIAL_EVIDENCE_AFTER"),
+        volume_mount_path=Path(_env("RAILWAY_VOLUME_MOUNT_PATH")) if _env("RAILWAY_VOLUME_MOUNT_PATH") else None,
     )
+
+
+def validate_web_settings(settings: Settings) -> None:
+    """Reject incomplete or unsafe Railway web configuration."""
+    if settings.environment not in {"staging", "prod"}:
+        raise ValueError("OPINIONS_ENVIRONMENT must be staging or prod")
+    required = {
+        "DATABASE_URL": settings.database_url,
+        "RAILWAY_VOLUME_MOUNT_PATH": str(settings.volume_mount_path or ""),
+        "READWISE_TOKEN": settings.readwise_token,
+        "TELEGRAM_BOT_TOKEN": settings.telegram_bot_token,
+        "TELEGRAM_ALLOWED_CHAT_ID": str(settings.telegram_allowed_chat_id or ""),
+        "TELEGRAM_WEBHOOK_SECRET": settings.telegram_webhook_secret,
+        "OPINIONS_START_SECRET": settings.opinions_start_secret,
+        "OPENAI_API_KEY": _env("OPENAI_API_KEY"),
+        "OPINIONS_REPO_URL": settings.opinions_repo_url,
+        "OPINIONS_GIT_TOKEN": settings.opinions_git_token,
+        "OPINIONS_REPO_BRANCH": settings.opinions_repo_branch,
+        "OPINIONS_TARGET_FILE": settings.opinions_target_file,
+        "OPINIONS_SOURCES_FILE": settings.opinions_sources_file,
+        "OPINIONS_INITIAL_EVIDENCE_AFTER": settings.initial_evidence_after,
+    }
+    missing = sorted(name for name, value in required.items() if not value)
+    if missing:
+        raise ValueError("missing Railway web settings: " + ", ".join(missing))
+    if "@" in settings.opinions_repo_url.partition("://")[2].partition("/")[0]:
+        raise ValueError("OPINIONS_REPO_URL must not contain credentials")
+    if settings.use_fake_telegram or settings.local_tracing_enabled:
+        raise ValueError("Railway web cannot use fake Telegram or local plaintext tracing")
+    expected_target = "TEST_OPINIONS.md" if settings.environment == "staging" else "OPINIONS.md"
+    if settings.opinions_target_file != expected_target:
+        raise ValueError(f"{settings.environment} requires OPINIONS_TARGET_FILE={expected_target}")
+    if settings.opinions_sources_file != "OPINIONS_SOURCES.jsonl":
+        raise ValueError("Railway web requires OPINIONS_SOURCES_FILE=OPINIONS_SOURCES.jsonl")
+
+
+def validate_cron_settings(settings: Settings) -> None:
+    if not settings.opinions_start_url or not settings.opinions_start_secret:
+        raise ValueError("OPINIONS_START_URL and OPINIONS_START_SECRET are required")

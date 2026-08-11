@@ -17,7 +17,7 @@ dependencies = [
     "psycopg[binary]>=3.3",
     "pydantic>=2.13",
     "sqlalchemy>=2.0",
-    "thinharness[tracing] @ git+https://github.com/ryanbbrown/thinharness.git@v0.5.1",
+    "thinharness[tracing]",
     "uvicorn>=0.38",
 ]
 
@@ -57,3 +57,6 @@ include = ["src/opinions_agent"]
 exclude = ["tests", ".runs", ".reviews", ".html"]
 pythonVersion = "3.11"
 typeCheckingMode = "basic"
+
+[tool.uv.sources]
+thinharness = { git = "https://github.com/ryanbbrown/thinharness.git", rev = "v0.6.0" }

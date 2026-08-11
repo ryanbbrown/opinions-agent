@@ -49,6 +49,94 @@ class ProposalStatus(StrEnum):
     SUPERSEDED = "superseded"
 
 
+class CycleStatus(StrEnum):
+    STARTING = "starting"
+    ACTIVE = "active"
+    STOPPED = "stopped"
+    COMPLETED = "completed"
+
+
+class BatchStatus(StrEnum):
+    PENDING = "pending"
+    QUEUED = "queued"
+    RUNNING = "running"
+    AWAITING_USER = "awaiting_user"
+    STOPPED = "stopped"
+    COMPLETED = "completed"
+
+
+class GitPhase(StrEnum):
+    AGENT_EDITING = "agent_editing"
+    COMMIT_INTENT = "commit_intent"
+    COMMITTED = "committed"
+    PUSHED = "pushed"
+    COMPLETED = "completed"
+
+
+class OpinionCycle(Base):
+    __tablename__ = "opinion_cycles"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    week_key: Mapped[str] = mapped_column(String(10), unique=True, index=True)
+    status: Mapped[str] = mapped_column(String(32), index=True, default=CycleStatus.STARTING.value)
+    window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    window_end: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    initial_evidence_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    document_count: Mapped[int] = mapped_column(Integer, default=0)
+    evidence_count: Mapped[int] = mapped_column(Integer, default=0)
+    batch_count: Mapped[int] = mapped_column(Integer, default=0)
+    current_batch: Mapped[int] = mapped_column(Integer, default=0)
+    failure_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    failure_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    batches: Mapped[list[OpinionBatch]] = relationship(back_populates="cycle", cascade="all, delete-orphan")
+
+
+class OpinionBatch(Base):
+    __tablename__ = "opinion_batches"
+    __table_args__ = (UniqueConstraint("cycle_id", "batch_number"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    cycle_id: Mapped[str] = mapped_column(ForeignKey("opinion_cycles.id", ondelete="CASCADE"), index=True)
+    batch_number: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(32), index=True, default=BatchStatus.QUEUED.value)
+    evidence_versions: Mapped[list] = mapped_column(JSON, default=list)
+    document_ids: Mapped[list] = mapped_column(JSON, default=list)
+    bundle_path: Mapped[str] = mapped_column(Text)
+    evidence_count: Mapped[int] = mapped_column(Integer)
+    document_count: Mapped[int] = mapped_column(Integer)
+    latest_run_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    successful_run_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    cycle: Mapped[OpinionCycle] = relationship(back_populates="batches")
+
+
+class OpinionEvidenceAssignment(Base):
+    __tablename__ = "opinion_evidence_assignments"
+    __table_args__ = (UniqueConstraint("evidence_id", "fingerprint"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    evidence_id: Mapped[str] = mapped_column(String(160), index=True)
+    fingerprint: Mapped[str] = mapped_column(String(64))
+    disposition: Mapped[str] = mapped_column(String(32))
+    cycle_id: Mapped[str | None] = mapped_column(ForeignKey("opinion_cycles.id"), nullable=True, index=True)
+    batch_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    assigned_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class WorkflowLease(Base):
+    __tablename__ = "workflow_leases"
+
+    name: Mapped[str] = mapped_column(String(128), primary_key=True)
+    owner_token: Mapped[str] = mapped_column(String(64))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
 class OpinionRun(Base):
     __tablename__ = "opinion_runs"
 
@@ -57,6 +145,8 @@ class OpinionRun(Base):
     window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     window_end: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     batch: Mapped[int] = mapped_column(Integer, default=1)
+    batch_count: Mapped[int] = mapped_column(Integer, default=1)
+    cycle_id: Mapped[str | None] = mapped_column(ForeignKey("opinion_cycles.id"), nullable=True, index=True)
     turn_seq: Mapped[int] = mapped_column(Integer, default=0)
     input_paths: Mapped[dict] = mapped_column(JSON, default=dict)
     agent_output: Mapped[dict] = mapped_column(JSON, default=dict)
@@ -64,6 +154,12 @@ class OpinionRun(Base):
     model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    lease_owner: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    git_phase: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    git_base_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    git_result_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    decision_log_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
@@ -72,11 +168,10 @@ class OpinionRun(Base):
 
 class OpinionProposal(Base):
     __tablename__ = "opinion_proposals"
-    __table_args__ = (UniqueConstraint("opinion_run_id", "batch", "proposal_id"),)
+    __table_args__ = (UniqueConstraint("opinion_run_id", "proposal_id"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     opinion_run_id: Mapped[str] = mapped_column(ForeignKey("opinion_runs.id", ondelete="CASCADE"), index=True)
-    batch: Mapped[int] = mapped_column(Integer, default=1)
     proposal_id: Mapped[str] = mapped_column(String(64))
     kind: Mapped[str] = mapped_column(String(32))
     opinion_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
