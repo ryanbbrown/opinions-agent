@@ -498,3 +498,10 @@ Each entry records:
 - **Length:** **1.68x / 1.69x golden (55w)** vs the docscope full-run mean of **1.82x** (1.81/1.84/1.90/1.79/1.81/1.75) — a **7% reduction**. Tweet-fit went from a docscope mean of ~3/33 to **5/33**, against 30/33 for the goldens.
 - **Verdict: the 16-target subset badly oversold this variant.** On the subset brevity-scope-2 read 32/32 vs a 14/16 baseline at 1.63x vs 1.84x; on the full set it reads 0.848 vs 0.899 at 1.68x vs 1.82x. The quality gain vanished entirely and the length gain shrank from 11% to 7%. This is a textbook case of the STATUS rule that subset screens are tripwires and never validation — the effect size on 16 targets was not merely noisy, it inverted.
 - **Round conclusion:** the scaffolding diagnosis was correct (framing carries no required concept, and the worst offenders did shrink), but removing framing is worth only ~7% of full-run length because the bulk of the excess is fidelity-rule material — named anchors, full enumerations, de-compressed abstractions — that the rules deliberately require. Buying the remaining length means loosening rules that `lean-fidelity` already showed are load-bearing (0.446 when consolidated). Recommended instead: keep docscope, and derive tweet-length text from an approved opinion as a separate step rather than compressing the belief map to fit a character limit.
+
+### production methodology selection (2026-08-11)
+
+- Ryan selected `exp/explicit-critic-docscope` as the production methodology.
+- Production uses `openai:gpt-5.6-sol` at medium effort and ThinHarness 0.6.0.
+- Each proposal gets one omission-only critic call with cited rows and fixed same-document context.
+- The deployment work rebuilds these changes against `main` without experiment run artifacts.

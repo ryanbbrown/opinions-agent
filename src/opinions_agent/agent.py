@@ -8,11 +8,11 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from opinions_agent.config import OPINION_AGENT_MODEL, OPINION_AGENT_REASONING_EFFORT, Settings
+from opinions_agent.config import Settings
 from opinions_agent.corpus import CorpusPaths
 from opinions_agent.fsio import append_jsonl, read_jsonl, write_jsonl_atomic, write_text_atomic
 from opinions_agent.opinions_doc import Opinion, OpinionsDocument, load_opinions, next_opinion_id
-from opinions_agent.prompts import build_system_prompt, build_turn_prompt
+from opinions_agent.prompts import CRITIC_SYSTEM_PROMPT, build_system_prompt, build_turn_prompt
 from opinions_agent.tracing import make_braintrust_tracing
 from opinions_agent.validation import run_artifact_validation
 
@@ -50,6 +50,7 @@ class AgentReadContext:
     memory_dir: Path
     opinions_md: Path
     sources_jsonl: Path
+    critic_context_jsonl: Path
 
     def read_paths(self) -> list[Path]:
         return [
@@ -62,6 +63,7 @@ class AgentReadContext:
             self.memory_dir,
             self.opinions_md,
             self.sources_jsonl,
+            self.critic_context_jsonl,
         ]
 
     def write_paths(self) -> list[Path]:
@@ -83,6 +85,9 @@ def build_read_context(settings: Settings, run_dir: Path) -> AgentReadContext:
         memory_dir=corpus.memory_dir,
         opinions_md=settings.opinions_target_path.expanduser().resolve(),
         sources_jsonl=settings.opinions_sources_path.expanduser().resolve(),
+        critic_context_jsonl=(run_dir / "critic-context.jsonl")
+        if (run_dir / "critic-context.jsonl").exists()
+        else run_dir / "selected-highlights.jsonl",
     )
 
 
@@ -136,6 +141,80 @@ def build_validation_tool(*, settings: Settings, run_dir: Path):
     )
 
 
+def build_evidence_fetch_tool(*, context: AgentReadContext):
+    """Expose cited rows and fixed same-document context to the critic only."""
+    from thinharness import ToolResult, ToolSpec
+
+    class GetEvidenceArgs(BaseModel):
+        evidence_ids: list[str]
+
+    def format_row(row: dict) -> str:
+        note = f"\n  Ryan's note: {row['note']}" if row.get("note") else ""
+        return (
+            f"- {row.get('document_title') or 'Untitled'} "
+            f"({row.get('evidence_kind') or 'highlight'}) — {row['highlight_id']}\n"
+            f"  {row.get('text') or ''}{note}"
+        )
+
+    async def get_evidence(args: GetEvidenceArgs) -> ToolResult:
+        selected = read_jsonl(context.selected_highlights_jsonl)
+        selected_by_id = {row["highlight_id"]: row for row in selected}
+        fixed_context = read_jsonl(context.critic_context_jsonl)
+        blocks: list[str] = []
+        unresolved: list[str] = []
+        cited_document_ids: list[str] = []
+        for evidence_id in args.evidence_ids:
+            row = selected_by_id.get(evidence_id)
+            if row is None:
+                unresolved.append(evidence_id)
+                continue
+            blocks.append(format_row(row))
+            document_id = row.get("document_id")
+            if document_id and document_id not in cited_document_ids:
+                cited_document_ids.append(document_id)
+        parts = [f"Resolved {len(blocks)} of {len(args.evidence_ids)} cited evidence rows."]
+        if blocks:
+            parts.append("\n".join(blocks))
+        cited_ids = set(args.evidence_ids)
+        context_blocks: list[str] = []
+        for document_id in cited_document_ids:
+            rows = [row for row in fixed_context if row.get("document_id") == document_id]
+            if not rows:
+                continue
+            summary = next((row.get("document_summary") for row in rows if row.get("document_summary")), None)
+            lines = [f"- {rows[0].get('document_title') or 'Untitled'}"]
+            if summary:
+                lines.append(f"  Document summary: {summary}")
+            uncited = [row for row in rows if row["highlight_id"] not in cited_ids]
+            if uncited:
+                lines.append("  Other fixed rows from this document (not cited by this draft):")
+                lines.extend("  " + format_row(row).replace("\n", "\n  ") for row in uncited)
+            context_blocks.append("\n".join(lines))
+        if context_blocks:
+            parts.append("Source-document context for the cited rows:\n\n" + "\n\n".join(context_blocks))
+        if unresolved:
+            parts.append("Unresolved IDs (not in this batch): " + ", ".join(unresolved))
+        return ToolResult(ok=True, content="\n\n".join(parts))
+
+    return ToolSpec(
+        name="get_evidence",
+        description="Fetch cited evidence and fixed same-document context for one draft opinion.",
+        parameters=GetEvidenceArgs,
+        handler=get_evidence,
+    )
+
+
+def build_critic_subagent(*, context: AgentReadContext):
+    from thinharness import SubAgentConfig
+
+    return SubAgentConfig(
+        name="critic",
+        description="Review one draft opinion for missing concepts from its cited evidence.",
+        system_prompt=CRITIC_SYSTEM_PROMPT,
+        tools=[build_evidence_fetch_tool(context=context)],
+    )
+
+
 def build_harness_config(*, context: AgentReadContext, settings: Settings):
     from thinharness import HarnessConfig, NativeOutput
 
@@ -144,15 +223,16 @@ def build_harness_config(*, context: AgentReadContext, settings: Settings):
     tracing = make_braintrust_tracing(settings)
     return HarnessConfig(
         root=_common_root(read_paths + write_paths),
-        model=OPINION_AGENT_MODEL,
-        extra_body={"reasoning": {"effort": OPINION_AGENT_REASONING_EFFORT}},
+        model=settings.harness_model,
+        effort=settings.harness_reasoning_effort,
         system_prompt=build_system_prompt(),
-        builtin_tools=["read", "search", "jsonl_search", "list", "glob", "edit", "write"],
+        builtin_tools=["read", "search", "jsonl_search", "list", "glob", "edit", "write", "subagent"],
         read_paths=[str(path) for path in read_paths],
         write_paths=[str(path) for path in write_paths],
         output_dir=str(context.run_dir / ".thinharness" / "outputs"),
         output_type=NativeOutput(AgentTurnOutput),
         output_mode="native",
+        subagents=[build_critic_subagent(context=context)],
         local_trace_dir=str(settings.local_trace_dir),
         local_tracing=settings.local_tracing_enabled,
         tracing=[tracing] if tracing is not None else [],

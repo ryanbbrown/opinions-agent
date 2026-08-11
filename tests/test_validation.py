@@ -8,8 +8,13 @@ from pathlib import Path
 import pytest
 from conftest import seed_corpus
 
-from opinions_agent.agent import build_harness_config, build_read_context, build_validation_tool
-from opinions_agent.config import OPINION_AGENT_MODEL, OPINION_AGENT_REASONING_EFFORT, Settings
+from opinions_agent.agent import (
+    build_evidence_fetch_tool,
+    build_harness_config,
+    build_read_context,
+    build_validation_tool,
+)
+from opinions_agent.config import Settings
 from opinions_agent.corpus import CorpusPaths, DocumentRow, upsert_documents
 from opinions_agent.fsio import read_json, write_json_atomic
 from opinions_agent.opinions_doc import OpinionsDocError
@@ -102,9 +107,13 @@ def test_validator_uses_baseline_max_as_effective_high_water(settings: Settings,
     bundle = make_bundle(settings)
     text = (opinions_repo / "OPINIONS.md").read_text(encoding="utf-8").replace("opinion-000002", "opinion-000004")
     (opinions_repo / "OPINIONS.md").write_text(text, encoding="utf-8")
-    source_text = (opinions_repo / "OPINIONS_SOURCES.jsonl").read_text(encoding="utf-8").replace(
-        "opinion-000002",
-        "opinion-000004",
+    source_text = (
+        (opinions_repo / "OPINIONS_SOURCES.jsonl")
+        .read_text(encoding="utf-8")
+        .replace(
+            "opinion-000002",
+            "opinion-000004",
+        )
     )
     (opinions_repo / "OPINIONS_SOURCES.jsonl").write_text(source_text, encoding="utf-8")
     high_water = read_json(CorpusPaths(settings.opinions_data_dir).opinion_id_high_water, default={})
@@ -221,7 +230,7 @@ def test_harness_config_uses_fixed_native_tool_surface(settings: Settings, opini
     context = build_read_context(settings, bundle.run_dir)
     config = build_harness_config(context=context, settings=settings)
 
-    assert config.builtin_tools == ["read", "search", "jsonl_search", "list", "glob", "edit", "write"]
+    assert config.builtin_tools == ["read", "search", "jsonl_search", "list", "glob", "edit", "write", "subagent"]
     assert str(settings.opinions_target_path) in config.write_paths
     assert str(settings.opinions_sources_path) in config.write_paths
     assert str(CorpusPaths(settings.opinions_data_dir).decisions_jsonl) in config.write_paths
@@ -230,9 +239,24 @@ def test_harness_config_uses_fixed_native_tool_surface(settings: Settings, opini
     assert str((bundle.run_dir / "review").resolve()) not in config.read_paths
     assert config.system_prompt == build_system_prompt()
     assert config.output_mode == "native"
-    assert config.model == OPINION_AGENT_MODEL
-    assert config.extra_body == {"reasoning": {"effort": OPINION_AGENT_REASONING_EFFORT}}
+    assert config.model == settings.harness_model
+    assert config.effort == settings.harness_reasoning_effort
+    assert [subagent.name for subagent in config.subagents] == ["critic"]
+    assert config.subagents[0].builtin_tools == []
+    assert [tool.name for tool in config.subagents[0].tools] == ["get_evidence"]
     assert read_json(CorpusPaths(settings.opinions_data_dir).opinion_id_high_water, default={}) == {}
+
+
+async def test_critic_evidence_tool_rejects_uncited_rows(settings: Settings, opinions_repo: Path) -> None:
+    bundle = make_bundle(settings)
+    context = build_read_context(settings, bundle.run_dir)
+    tool = build_evidence_fetch_tool(context=context)
+
+    result = await tool.handler(tool.parameters(evidence_ids=["rw:h0", "rw:not-selected"]))
+
+    assert result.ok is True
+    assert "Resolved 1 of 2" in result.content
+    assert "rw:not-selected" in result.content
 
 
 def selected_source_row(run_dir: Path, opinion_id: str, evidence_id: str) -> dict:

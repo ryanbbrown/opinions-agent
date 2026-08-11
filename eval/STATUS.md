@@ -44,7 +44,7 @@ Round history (variants 1–6, full entries in the ledger): the explicit duty co
 - **The recurring miss (3× identical):** W12-03's "hand agents the routine work" half — present only in the parent document's **summary**, never in a selected highlight; drafter cites the one in-the-loop highlight, critic READYs. W11-04's "not pay/title/brand" list is the same shape (summary/body only).
 - **Revise-type noise:** revised opinions inherit claims backed by prior-week sources the critic can't resolve; it flags the inherited half as unsupported. Needs revision-scoping in the critic prompt if kept.
 
-**Variant 8 (`exp/explicit-critic-docscope`, current tip):** Ryan-directed widening of `get_evidence` to same-document context — per cited row's document, the document summary plus uncited selected rows from that document; no article bodies. Three critic-prompt iterations were required before the mechanism fired (ledger entry has the smoke/replay evidence): "complete the argument" framing for the new context, a complementary-split case added to the whole-claim check, and a bullet-direction rule (REVISE bullets point from visible evidence to draft; support-checking draft claims is forbidden — that was the critic's natural attractor whenever unresolved prior-week IDs appeared). Critic engagement 45–46% REVISE (vs 32–34% cited-scope) with no quality damage. Residual classes: W11-04-style two-role named specifics (brand is an asset in the cited highlight, a rejected optimization target in the summary — the critic READY'd it once with the summary in view; needs upstream citation/clustering work, not critic scope) and the chronic W13-02/W13-04 pair — though r6 passed all three, so none are hard-blocked. **Promotion decision is Ryan's call — pending.** No clean explicit-routing-on-proxy datapoint exists (both attempts were killed by upstream provider failures and voided), so the no-critic line's numbers are all direct-API; the backend confound is noted but docscope's own 5 runs are all proxy.
+**Variant 8 (`exp/explicit-critic-docscope`, production choice):** Ryan selected the same-document critic on 2026-08-11. The production implementation gives each critic the cited rows, the fixed same-document summary and evidence, and no unrelated documents. The pooled result is 178/198 = 0.899 across six full runs. No clean explicit-routing-on-proxy datapoint exists, so the backend confound remains recorded.
 
 ## Screening Plan
 
@@ -69,7 +69,7 @@ Every W04–W13 core-concept list is finalized — no `(open:)` flags remain. Cr
 - When a run posts a surprising aggregate, verify per-week `opinion_quality` coverage before comparing — the reported mean must match the verdict-implied mean from per-target verdicts.
 - Cap concurrent full runs at 2; give concurrent runs distinct `RUNS_DIR` values.
 - `rescore_opinion_eval(settings, source_experiment=..., experiment_name='<name>-rs-0710f')` from main re-judges stored generations under the current judge.
-- thinharness pinned at **v0.5.3**; the `subagent` gateway must be listed in `builtin_tools` or configured subagents are silently unreachable.
+- thinharness pinned at **v0.6.0**; the `subagent` gateway must be listed in `builtin_tools`.
 
 ## Stop Rule
 

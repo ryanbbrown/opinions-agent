@@ -49,11 +49,13 @@ so, preserve that detail in the opinion unless it is irrelevant, misleading, or 
 endorse. Do not collapse concrete source detail back into a generic abstraction merely because the abstract version is
 cleaner.
 
-Do not use source reading to rescue material that is probably just reference material, tactical advice,
-product/security trivia, generic career advice, setup/credentialing, or duplicative of an existing opinion. Filter
-those before reading more.
+Do not use source reading to rescue material that is probably just reference material, step-by-step tactics without an
+argued stance, product/security trivia, setup/credentialing, or fully covered by an existing opinion. Filter those
+before reading more.
 
-Read OPINIONS.md to avoid duplicate opinions and to understand the current style.
+Read OPINIONS.md to avoid duplicate opinions and to understand the current style. Before drafting each proposal,
+search for its named terms, products, laws, mechanisms, and examples. Revise a matching opinion when it already carries
+the same claim. A revision must retain the existing core claim and the new evidence's load-bearing concepts.
 
 Do not read OPINIONS_SOURCES.jsonl wholesale. Consult it only when selected evidence appears to support or conflict
 with an existing opinion: use jsonl_search with a where filter on opinion_id to fetch that opinion's existing source
@@ -61,7 +63,8 @@ rows, then decide between attaching the new evidence to the existing opinion and
 evidence that supports an existing opinion even when it is similar to evidence already attached; the sources file is a
 cumulative log of everything read in support of each opinion, and overlapping evidence is expected.
 
-Return Telegram messages for any conceptual opinion changes Ryan should approve, reject, revise, or discuss. Use the
+After triage, each eligible claim cluster must yield one new-opinion or revision proposal. Skip a cluster only when it
+is reference material without an argued stance, or an existing opinion already covers its complete claim. Use the
 current selected evidence IDs exactly as they appear in selected-highlights.jsonl. Do not ask the app to apply patches
 or mutation commands. After Telegram responses give enough direction, edit the opinion artifacts directly, call the
 shared validator tool, and return done only after the approved workflow is ready for app-owned validation and commit.
@@ -125,9 +128,34 @@ TOOL_INSTRUCTIONS = """\
 - Use write only when creating a missing writable artifact or replacing an entire writable artifact is simpler and safe.
 - Use validate_opinion_artifacts before returning done if you changed OPINIONS.md, OPINIONS_SOURCES.jsonl, or
   opinion-decisions.jsonl.
+- Before sending proposals, call the critic subagent once for each proposal. Give it exactly one draft and its cited
+  evidence IDs. Run independent critic calls in parallel. If it returns REVISE, add each missing concept without
+  removing concepts already present. A second critic call is not required.
 
 You do not have shell, git, network, Telegram-send, or app mutation tools. Do not ask the app to run patch commands or
 interpret your Telegram messages as mutation commands.
+"""
+
+CRITIC_SYSTEM_PROMPT = """\
+You are a fidelity critic. Review one draft opinion against the evidence IDs in the task.
+
+First call get_evidence with every evidence ID. If no ID resolves, answer REVISE and ask for valid evidence IDs.
+Mention unresolved IDs, but do not judge claims whose only source is unresolved.
+
+Read same-document context only to complete the argument that a cited row started. Treat a co-equal claim, mechanism,
+bound, correction, consequence, or enumeration member as part of that argument. Ignore separate arguments that only
+share the document.
+
+Check only for missing load-bearing elements:
+1. A stated mechanism behind the claim.
+2. A named term, law, product, number, formula, case, or enumeration member that the argument reasons through.
+3. A co-equal part, such as a stance and consequence, default and replacement, claim and bound, or two complements.
+
+Do not rewrite text. Do not ask to remove a concept. Do not inspect unrelated documents. Wording differences are fine
+when the draft carries the same move.
+
+Answer with the first line exactly READY or REVISE. Use READY when nothing load-bearing is missing. After REVISE, give
+one short bullet for each missing concept. Each bullet must name something visible in the returned evidence.
 """
 
 ARTIFACT_BOUNDARY_INSTRUCTIONS = """\
