@@ -3,7 +3,7 @@
 *Note: work in progress*
 
 `opinions-agent` syncs Readwise Reader documents, summaries, full content, highlights, and notes into a durable
-filesystem corpus, deterministically selects the current window of evidence for each run, asks an agent to propose
+filesystem corpus, assigns new evidence versions to a weekly cycle, asks an agent to propose
 conceptual opinion changes, and resumes that same bounded agent conversation to update `OPINIONS.md`,
 `OPINIONS_SOURCES.jsonl`, and `opinion-decisions.jsonl` only after Telegram approval.
 
@@ -15,7 +15,7 @@ then performs approved artifact edits inside a write boundary limited to the thr
 Durable corpus (`OPINIONS_DATA_DIR`, default `.readwise`):
 
 ```text
-state.json                 # app-owned sync + workflow cursor state
+state.json                 # Reader sync watermarks only
 documents.jsonl            # one normalized row per Reader document
 highlights.jsonl           # one normalized row per Reader highlight or document-level note
 opinion-decisions.jsonl    # agent-authored compact decision summaries
@@ -24,22 +24,23 @@ raw/reader_<id>.json       # untouched API payloads (not agent context)
 memory/                    # placeholder memory files (no agent writes in v1)
 ```
 
-Run bundles (`RUNS_DIR`, default `.runs`) hold active-run/debug artifacts only:
+Cycle bundles (`RUNS_DIR`, default `.runs`) hold fixed evidence snapshots and recovery artifacts:
 
 ```text
-active/<run_id>/selected-highlights.jsonl, selected-documents.jsonl
-active/<run_id>/review/summary.md, initial-telegram.md
-completed/<run_id>/final.json   # retained OPINIONS_COMPLETED_RUN_RETENTION_DAYS days (default 30)
+active/<cycle_id>/batches/<number>/selected-highlights.jsonl
+active/<cycle_id>/batches/<number>/selected-documents.jsonl, critic-context.jsonl
+active/<cycle_id>/batches/<number>/recovery/<run_id>/
+completed/<cycle_id>/
 ```
 
-The database keeps operational state only: runs, Telegram message/update idempotency, ThinHarness resume state, and
-failure details. Proposal rows may exist as an audit cache, but they do not drive file mutations.
+PostgreSQL owns cycles, batches, evidence assignments, leases, runs, Telegram idempotency, and git durability phases.
 
 ## Workflow
 
 1. `sync` pulls Reader v3 documents/highlights/notes into the corpus (`state.json` advances only after all
    corpus writes succeed).
-2. `opinion-run` refuses to start while any run is non-terminal, selects evidence between the workflow cursor and now,
+2. `opinion-cycle` creates one fixed weekly snapshot. It balances batches at 20 documents or 50 evidence rows.
+   `opinion-run` remains a manual run-only command and selects an explicit or previous-seven-day window.
    including Reader highlights, document-level notes, and tagged document summaries, writes the run bundle, and starts
    one ThinHarness conversation.
 3. The agent returns native structured output: `status` plus one or more Telegram message specs. The app sends those
@@ -54,7 +55,8 @@ failure details. Proposal rows may exist as an audit cache, but they do not driv
    the same validator the app uses, and returns `done` or `blocked`.
 7. After `done`, the app validates once more, rejects unrelated staged files, stages only `OPINIONS.md` and
    `OPINIONS_SOURCES.jsonl`, commits/pushes those files if changed, updates the opinion-ID high-water mark, advances
-   the workflow cursor, and only then sends final success-style Telegram messages. `opinion-decisions.jsonl` lives in
+   the evidence assignment, and only then sends final success-style Telegram messages. The worker queues the next
+   batch automatically. `opinion-decisions.jsonl` lives in
    `OPINIONS_DATA_DIR` and is not committed to the opinions repo.
 
 `OPINIONS.md` uses section headings with one-line bullet opinions and indented metadata comments:
@@ -84,7 +86,9 @@ docker compose up -d postgres
 uv run alembic upgrade head      # or: uv run opinions-agent init-db (creates tables directly)
 ```
 
-Required local variables: `DATABASE_URL`, `READWISE_TOKEN`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_CHAT_ID`, and the `OPINIONS_*` repo settings shown in `.env.example`. Local ThinHarness calls use Codex CLI authentication through `cproxy`, so they do not need `OPENAI_API_KEY`. The agent model defaults to `openai:gpt-5.5` with medium reasoning effort. `BRAINTRUST_API_KEY` and `BRAINTRUST_PROJECT_ID` enable Braintrust tracing and are required for `eval run`; traces are stamped with an environment tag (`dev` locally, `prod` on Railway, overridable via `OPINIONS_ENVIRONMENT`).
+Required local variables include `DATABASE_URL`, Reader and Telegram credentials, and the repository settings in
+`.env.example`. Local ThinHarness calls use Codex CLI authentication through `cproxy`. The agent defaults to
+`openai:gpt-5.6-sol` at medium effort. Braintrust keys enable tracing and are required for `eval run`.
 
 Safety default: `OPINIONS_TARGET_FILE` defaults to `TEST_OPINIONS.md` so local runs never touch the real
 `OPINIONS.md` by accident. Production (Railway) must set `OPINIONS_TARGET_FILE=OPINIONS.md` explicitly. Note that
@@ -121,19 +125,21 @@ Do not restart `cproxy` while a local run is awaiting Telegram input; a restarte
 cproxy run --port 8113 --chains-max 500 -- uv run opinions-agent serve
 uv run opinions-agent init-runtime     # ensure data dirs, memory files, repo checkout, DB migrations
 uv run opinions-agent sync             # Reader -> filesystem corpus
+uv run opinions-agent opinion-cycle    # create a production-style weekly cycle
 cproxy run --port 8113 --chains-max 500 -- uv run opinions-agent opinion-run
 cproxy run --port 8113 --chains-max 500 -- uv run opinions-agent sample-run W04
 uv run opinions-agent sample-session init review --opinions-file OPINIONS.md
 cproxy run --port 8113 --chains-max 500 -- uv run opinions-agent sample-session run review W04 --send-telegram
 cproxy run --port 8113 --chains-max 500 -- uv run opinions-agent sample-session poll review
 cproxy run --port 8113 --chains-max 500 -- uv run opinions-agent eval run --weeks W04 W05
-uv run opinions-agent abandon-run ID   # abandon a stuck pending run (cursor does not advance)
+uv run opinions-agent abandon-run ID   # abandon a stuck pending or running run
+uv run opinions-agent retry-cycle ID   # retry the stopped current batch from its fixed bundle
 cproxy run --port 8113 --chains-max 500 -- uv run opinions-agent telegram-poll
 uv run opinions-agent set-telegram-webhook https://your-service.up.railway.app/telegram/webhook
 ```
 
 Useful `opinion-run` flags: `--deterministic-agent` (no model calls), `--skip-sync`,
-`--window-start/--window-end` (ISO timestamps, override the workflow cursor).
+`--window-start/--window-end` (ISO timestamps, override the default seven-day window).
 
 `sample-run W04` maps `W04` to the fourth chronological seven-day window in the local corpus, starting from the Monday
 of the earliest dated highlight. It creates a readable run directory named `<timestamp>-W04` under `.runs/active/`,
@@ -159,35 +165,44 @@ OPINIONS_FAKE_TELEGRAM=1 uv run opinions-agent opinion-run --deterministic-agent
 
 ## Railway
 
-Deploys build from this repo; the opinions repo and all durable files live outside the build:
+Create two Railway services from this repository. Give the web service `railway.toml`. Give the cron service
+`railway.cron.toml` as its custom config path.
 
-- Attach a volume. `OPINIONS_DATA_DIR`, `RUNS_DIR`, and `OPINIONS_REPO_DIR` default to
+- Attach one volume to the web service only. `OPINIONS_DATA_DIR`, `RUNS_DIR`, and `OPINIONS_REPO_DIR` default to
   `$RAILWAY_VOLUME_MOUNT_PATH/{readwise,runs,opinions-repo}` when the mount env var is present, or set them
   explicitly (e.g. `/app/data/readwise`). Volumes mount at container start, so all filesystem initialization is
   runtime work (`init-runtime`), never build time.
-- Set `OPINIONS_REPO_URL` to a token-backed HTTPS URL; the repo is cloned/updated at runtime into
-  `OPINIONS_REPO_DIR`. Set `OPINIONS_TARGET_FILE=OPINIONS.md` and `OPINIONS_SOURCES_FILE=OPINIONS_SOURCES.jsonl`.
+- Keep `OPINIONS_REPO_URL` free of credentials. Put a fine-grained repository token in `OPINIONS_GIT_TOKEN`.
+  Grant it content read/write access only to the opinions repository.
 - Set `OPENAI_API_KEY` for direct model access. Railway does not use local-only `cproxy` or Codex CLI authentication.
-- Run `uv run opinions-agent init-runtime` on deploy (pre-start), then `serve`.
-- Schedule `uv run opinions-agent opinion-run` weekly (Railway cron); biweekly is a schedule change, not a
-  storage change. The scheduler exits cleanly if a previous run is still pending approval.
+- Keep the web service at one replica. The checked-in command initializes storage and migrations before `serve`.
+- Set `OPINIONS_START_URL=https://<web-domain>/internal/opinion-cycle/start` and the same random
+  `OPINIONS_START_SECRET` on both services. The cron service needs only those two values.
+- Choose one weekly UTC cron schedule in the Railway cron service settings. The cron only sends the start request.
+- Register `https://<web-domain>/telegram/webhook` with `set-telegram-webhook`. Use the configured webhook secret.
 - Enable Railway volume backups for the mounted data directory; the opinions repo is separately durable via git.
+
+For staging, use separate PostgreSQL, volume, Telegram credentials, repository token, and disposable repository or
+branch. Set `OPINIONS_ENVIRONMENT=staging` and `OPINIONS_TARGET_FILE=TEST_OPINIONS.md`. For production, set
+`OPINIONS_ENVIRONMENT=prod` and `OPINIONS_TARGET_FILE=OPINIONS.md`. Both require
+`OPINIONS_SOURCES_FILE=OPINIONS_SOURCES.jsonl` and an explicit `OPINIONS_INITIAL_EVIDENCE_AFTER` timestamp. This
+timestamp is the oldest evidence version that the first cycle can assign.
+
+Complete one staging cycle before production. Test a repeated same-week start and one stopped-batch retry. Then enable
+backups and promote the same commit and configuration shape to production.
 
 Smoke checklist after a deploy:
 
 1. `curl https://<service>/healthz` returns `{"status":"ok"}`.
 2. `init-runtime` logged `runtime initialized` (dirs, repo checkout, migrations).
-3. `opinion-run` either creates a run (agent-authored Telegram messages arrive) or prints
-   `no highlights in the current window` / the active-run refusal.
+3. `cron-trigger` returns a cycle ID. A repeated same-week request returns the same cycle.
 4. Answering all required current-turn messages, or sending exact `GO` / `SKIP`, resumes the same agent conversation.
    Successful approved changes push a commit to the opinions repo touching only `OPINIONS.md` and
    `OPINIONS_SOURCES.jsonl`.
-5. After the agent returns `done` and app validation/commit handling succeeds, `state.json`
-   `workflow.last_completed_window_end` advances and the run folder moves to `completed/`.
+5. After every batch succeeds, the next batch starts automatically. The cycle folder moves to `completed/` last.
 
-If validation, commit, or push fails the run is marked failed with recovery context in `failure_reason`. Inspect the
-opinions repo, `OPINIONS_DATA_DIR/opinion-decisions.jsonl`, and the active run snapshot before retrying. Failed runs
-are terminal and do not block new runs, so no `abandon-run` is needed (that command is for runs stuck pending approval).
+If validation, commit, or push fails, the cycle stops. Inspect its recovery archive, then run `retry-cycle ID`.
+The retry uses the stored batch. It does not select evidence again.
 
 ## Testing
 

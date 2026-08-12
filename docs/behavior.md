@@ -45,7 +45,7 @@ Each opinion run deterministically selects the evidence window, writes an inspec
 ### Requirements
 
 - RUN-1: `opinion-run` refuses to start when another run is in a non-terminal status.
-- RUN-2: Unless explicitly overridden, the run window starts at `state.json` `workflow.last_completed_window_end` or defaults to the previous seven days.
+- RUN-2: A manual run uses an explicit window or defaults to the previous seven days. Weekly cycles use assignments.
 - RUN-3: Evidence selection includes rows whose timestamp is `window_start <= highlighted_at < window_end`. For tagged document-summary evidence, the timestamp is the document `saved_at` time.
 - RUN-4: Selected evidence is sorted oldest-first, with stable ID tie-breaking.
 - RUN-5: A run with no selected evidence does not create a database run.
@@ -110,7 +110,7 @@ The agent proposes conceptual opinion changes and gets human approval or revisio
 - PROPOSAL-6: The app does not decide whether the agent may call file-edit tools on each turn. Instead, the conversation contract tells the agent when opinion edits are appropriate, and the app only treats edits as durable after approval or revision decisions are available and the approved workflow completes.
 - PROPOSAL-7: The app provides the shared deterministic artifact validator to the agent as a tool. The agent must successfully validate durable opinion edits before returning `done`.
 - PROPOSAL-8: The shared validator is not an editor. It does not normalize, deduplicate, allocate IDs, repair comments, or otherwise rewrite agent-edited artifacts.
-- PROPOSAL-9: A run with no opinion-worthy changes may complete with `status="done"`, no artifact changes, no commit SHA, and workflow cursor advancement after validation/no-op handling succeeds.
+- PROPOSAL-9: A run with no opinion-worthy changes may complete with `status="done"` and no artifact commit.
 
 ## Telegram Approval
 
