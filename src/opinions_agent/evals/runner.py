@@ -7,7 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from opinions_agent.agent import DeterministicOpinionAgent, ThinHarnessOpinionAgent
-from opinions_agent.config import OPINION_AGENT_MODEL, OPINION_AGENT_REASONING_EFFORT, Settings
+from opinions_agent.config import Settings
 from opinions_agent.corpus import CorpusPaths
 from opinions_agent.db import init_db, make_engine, make_sessionmaker
 from opinions_agent.evals.proposals import parse_proposals
@@ -114,8 +114,8 @@ async def run_opinion_eval(
         scores=[evidence_recall, evidence_precision, opinion_brevity, opinion_quality, opinion_attempted],
         experiment_name=experiment_name,
         metadata={
-            "model": OPINION_AGENT_MODEL,
-            "reasoning_effort": OPINION_AGENT_REASONING_EFFORT,
+            "model": settings.harness_model,
+            "reasoning_effort": settings.harness_reasoning_effort,
             "environment": settings.environment,
             "agent": "deterministic" if deterministic else "thinharness",
             "weeks": [case.week for case in selected_cases],

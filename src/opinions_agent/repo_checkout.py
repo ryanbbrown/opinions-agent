@@ -3,15 +3,18 @@ from __future__ import annotations
 from pathlib import Path
 
 from opinions_agent.config import Settings
-from opinions_agent.tools.git_ops import assert_relative_target, run_git
+from opinions_agent.tools.git_ops import assert_relative_target, git_credential_env, redact_git_error, run_git
 
 
-def ensure_opinions_repo(settings: Settings) -> None:
+def ensure_opinions_repo(settings: Settings, *, refresh: bool = True) -> None:
     repo_dir = settings.opinions_repo_dir
+    credential_env = git_credential_env(settings.opinions_git_token)
     if (repo_dir / ".git").exists():
-        run_git(repo_dir, "fetch", "origin", settings.opinions_repo_branch)
+        if not refresh:
+            return
+        run_git(repo_dir, "fetch", "origin", settings.opinions_repo_branch, env=credential_env)
         run_git(repo_dir, "checkout", settings.opinions_repo_branch)
-        run_git(repo_dir, "pull", "--ff-only", "origin", settings.opinions_repo_branch)
+        run_git(repo_dir, "pull", "--ff-only", "origin", settings.opinions_repo_branch, env=credential_env)
         return
     if not settings.opinions_repo_url:
         raise ValueError("OPINIONS_REPO_URL is required when OPINIONS_REPO_DIR is not already a git checkout")
@@ -23,9 +26,10 @@ def ensure_opinions_repo(settings: Settings) -> None:
         text=True,
         capture_output=True,
         check=False,
+        env=credential_env,
     )
     if result.returncode != 0:
-        raise RuntimeError((result.stderr or result.stdout).strip())
+        raise RuntimeError(redact_git_error((result.stderr or result.stdout).strip(), settings.opinions_git_token))
 
 
 def resolve_repo_file(settings: Settings, repo_file: str) -> Path:

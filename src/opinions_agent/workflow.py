@@ -4,21 +4,39 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
+from uuid import uuid4
 
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from opinions_agent.agent import AgentTurnOutput, OpinionAgent, TelegramMessageSpec, build_read_context
-from opinions_agent.config import OPINION_AGENT_MODEL, Settings
-from opinions_agent.corpus import CorpusPaths, init_data_dirs, load_state, save_state
+from opinions_agent.config import Settings
+from opinions_agent.corpus import CorpusPaths, init_data_dirs
 from opinions_agent.fsio import write_text_atomic
-from opinions_agent.models import NON_TERMINAL_RUN_STATUSES, OpinionRun, RunStatus, TelegramInteraction, utcnow
+from opinions_agent.models import (
+    NON_TERMINAL_RUN_STATUSES,
+    BatchStatus,
+    CycleStatus,
+    GitPhase,
+    OpinionBatch,
+    OpinionCycle,
+    OpinionRun,
+    RunStatus,
+    TelegramInteraction,
+    utcnow,
+)
 from opinions_agent.opinions_doc import load_opinions, parse_opinions, read_sources
-from opinions_agent.reader import iso_utc, parse_iso
+from opinions_agent.reader import iso_utc
+from opinions_agent.recovery import capture_run_baseline, file_hash
 from opinions_agent.repo_checkout import ensure_opinions_repo, ensure_repo_file
 from opinions_agent.selection import RunPaths, finalize_run_dir, select_run_highlights, write_run_bundle
-from opinions_agent.tools.git_ops import assert_targets_clean, commit_and_push_opinions_files, run_git
+from opinions_agent.tools.git_ops import (
+    assert_targets_clean,
+    commit_and_push_opinions_files,
+    git_credential_env,
+    run_git,
+)
 from opinions_agent.validation import run_artifact_validation, update_opinion_id_high_water
 
 DEFAULT_WINDOW = timedelta(days=7)
@@ -37,12 +55,13 @@ class ActiveRunError(RuntimeError):
 
 
 VALID_TRANSITIONS = {
-    RunStatus.PENDING_AGENT.value: {RunStatus.RUNNING_AGENT.value, RunStatus.FAILED.value},
+    RunStatus.PENDING_AGENT.value: {RunStatus.RUNNING_AGENT.value, RunStatus.FAILED.value, RunStatus.ABANDONED.value},
     RunStatus.RUNNING_AGENT.value: {
         RunStatus.AWAITING_USER.value,
         RunStatus.COMPLETED.value,
         RunStatus.BLOCKED.value,
         RunStatus.FAILED.value,
+        RunStatus.ABANDONED.value,
     },
     RunStatus.AWAITING_USER.value: {RunStatus.RUNNING_AGENT.value, RunStatus.FAILED.value, RunStatus.ABANDONED.value},
     RunStatus.COMPLETED.value: set(),
@@ -74,9 +93,7 @@ def _run_window(
     end = window_end or current
     if window_start is not None:
         return window_start, end
-    state = load_state(CorpusPaths(settings.opinions_data_dir))
-    cursor = parse_iso(state.workflow.last_completed_window_end)
-    return cursor or (end - DEFAULT_WINDOW), end
+    return end - DEFAULT_WINDOW, end
 
 
 async def start_opinion_run(
@@ -112,7 +129,7 @@ async def start_opinion_run(
         status=RunStatus.PENDING_AGENT.value,
         window_start=start,
         window_end=end,
-        model=OPINION_AGENT_MODEL,
+        model=settings.harness_model,
         attempts=0,
     )
     session.add(run)
@@ -145,7 +162,104 @@ async def start_opinion_run(
         return run
     except Exception as exc:
         _fail_run(session, run, str(exc))
+        await send_cycle_failure_notice(session=session, settings=settings, telegram=telegram, run=run)
         raise
+
+
+async def start_materialized_opinion_run(
+    *,
+    session: Session,
+    settings: Settings,
+    agent: OpinionAgent,
+    telegram: TelegramSender,
+    batch: OpinionBatch,
+) -> OpinionRun:
+    """Start one queued cycle batch from its existing immutable bundle."""
+    active = find_active_run(session)
+    if active is not None:
+        raise ActiveRunError(f"run {active.id} is still {active.status}; not starting another run")
+    cycle = session.get(OpinionCycle, batch.cycle_id)
+    if cycle is None:
+        raise ValueError(f"cycle not found: {batch.cycle_id}")
+    ensure_opinions_repo(settings)
+    ensure_repo_file(settings, settings.opinions_target_file)
+    ensure_repo_file(settings, settings.opinions_sources_file)
+    run = OpinionRun(
+        status=RunStatus.PENDING_AGENT.value,
+        window_start=cycle.window_start,
+        window_end=cycle.window_end,
+        model=settings.harness_model,
+        attempts=0,
+        cycle_id=cycle.id,
+        batch=batch.batch_number,
+        batch_count=cycle.batch_count,
+        input_paths={
+            "dir": batch.bundle_path,
+            "review_summary_md": str(Path(batch.bundle_path) / "review" / "summary.md"),
+            "selected_highlights_jsonl": str(Path(batch.bundle_path) / "selected-highlights.jsonl"),
+            "selected_documents_jsonl": str(Path(batch.bundle_path) / "selected-documents.jsonl"),
+        },
+    )
+    session.add(run)
+    session.flush()
+    capture_run_baseline(settings, run, Path(batch.bundle_path))
+    batch.latest_run_id = run.id
+    batch.status = BatchStatus.RUNNING.value
+    session.commit()
+    try:
+        await _run_agent_turn(
+            session=session,
+            settings=settings,
+            agent=agent,
+            telegram=telegram,
+            run=run,
+            prompt_fragment=None,
+        )
+        return run
+    except Exception as exc:
+        _fail_run(session, run, str(exc))
+        await send_cycle_failure_notice(session=session, settings=settings, telegram=telegram, run=run)
+        raise
+
+
+async def run_pending_opinion_run(
+    *,
+    session: Session,
+    settings: Settings,
+    agent: OpinionAgent,
+    telegram: TelegramSender,
+    run: OpinionRun,
+) -> None:
+    if run.status != RunStatus.PENDING_AGENT.value:
+        raise ValueError(f"run {run.id} is not pending")
+    try:
+        await _run_agent_turn(
+            session=session,
+            settings=settings,
+            agent=agent,
+            telegram=telegram,
+            run=run,
+            prompt_fragment=None,
+        )
+    except Exception as exc:
+        _fail_run(session, run, str(exc))
+        await send_cycle_failure_notice(session=session, settings=settings, telegram=telegram, run=run)
+        raise
+
+
+def complete_reconciled_run(session: Session, settings: Settings, run: OpinionRun) -> None:
+    """Complete database and cycle state after recovery confirms the remote commit."""
+    if run.git_phase != GitPhase.PUSHED.value:
+        raise ValueError("run is not durably pushed")
+    validation = run_artifact_validation(settings=settings, run_dir=_run_dir(run, settings))
+    update_opinion_id_high_water(settings, validation.high_water_mark)
+    run.decision_log_hash = file_hash(CorpusPaths(settings.opinions_data_dir).decisions_jsonl)
+    _complete_cycle_batch(session, settings, run, run.git_result_sha, validation.summary)
+    run.status = RunStatus.COMPLETED.value
+    run.git_phase = GitPhase.COMPLETED.value
+    run.lease_owner = None
+    run.lease_expires_at = None
+    session.commit()
 
 
 async def _run_agent_turn(
@@ -159,6 +273,8 @@ async def _run_agent_turn(
 ) -> None:
     if run.status == RunStatus.PENDING_AGENT.value:
         transition(run, RunStatus.RUNNING_AGENT)
+        run.lease_owner = uuid4().hex
+        run.lease_expires_at = utcnow() + timedelta(minutes=15)
         session.commit()
     context = build_read_context(settings, _run_dir(run, settings))
     output, resume_state = await agent.run_turn(
@@ -176,12 +292,18 @@ async def _run_agent_turn(
         _write_initial_telegram_review(_run_dir(run, settings), output)
     if output.status == "awaiting_user":
         transition(run, RunStatus.AWAITING_USER)
+        run.lease_owner = None
+        run.lease_expires_at = None
+        _set_batch_status(session, run, BatchStatus.AWAITING_USER)
         session.commit()
         await send_agent_messages(session=session, settings=settings, telegram=telegram, run=run, output=output)
         return
     if output.status == "blocked":
         transition(run, RunStatus.BLOCKED)
+        run.lease_owner = None
+        run.lease_expires_at = None
         run.failure_reason = output.notes or "agent returned blocked"
+        _stop_cycle(session, run, "agent_blocked", "The opinion agent needs manual intervention.")
         session.commit()
         await send_agent_messages(session=session, settings=settings, telegram=telegram, run=run, output=output)
         return
@@ -204,6 +326,8 @@ async def _complete_done_run(
     try:
         validation = run_artifact_validation(settings=settings, run_dir=_run_dir(run, settings))
         fallback_summary = _completion_summary(settings)
+        run.git_phase = GitPhase.COMMIT_INTENT.value
+        session.commit()
         commit = commit_and_push_opinions_files(
             repo_dir=settings.opinions_repo_dir,
             target_files=[settings.opinions_target_file, settings.opinions_sources_file],
@@ -211,18 +335,39 @@ async def _complete_done_run(
             author_name=settings.opinions_git_author_name,
             author_email=settings.opinions_git_author_email,
             message=f"chore: complete opinion run {run.id}",
+            push=False,
+            git_token=settings.opinions_git_token,
         )
+        run.git_result_sha = commit.commit_sha
+        run.git_phase = GitPhase.COMMITTED.value
+        session.commit()
+        if commit.commit_sha:
+            run_git(
+                settings.opinions_repo_dir,
+                "push",
+                "origin",
+                settings.opinions_repo_branch,
+                env=git_credential_env(settings.opinions_git_token),
+            )
+        run.git_phase = GitPhase.PUSHED.value
+        session.commit()
         commit_boundary_finished = True
         update_opinion_id_high_water(settings, validation.high_water_mark)
-        _advance_workflow_cursor(settings, run)
-        _finalize_run_artifacts(
-            settings,
-            run,
-            status=RunStatus.COMPLETED.value,
-            commit_sha=commit.commit_sha,
-            validation_summary=validation.summary,
-        )
+        run.decision_log_hash = file_hash(CorpusPaths(settings.opinions_data_dir).decisions_jsonl)
+        if run.cycle_id:
+            _complete_cycle_batch(session, settings, run, commit.commit_sha, validation.summary)
+        else:
+            _finalize_run_artifacts(
+                settings,
+                run,
+                status=RunStatus.COMPLETED.value,
+                commit_sha=commit.commit_sha,
+                validation_summary=validation.summary,
+            )
         transition(run, RunStatus.COMPLETED)
+        run.lease_owner = None
+        run.lease_expires_at = None
+        run.git_phase = GitPhase.COMPLETED.value
         session.commit()
         durability = f"commit {commit.commit_sha}" if commit.commit_sha else "no opinion file changes"
         final_messages = output.telegram_messages or [TelegramMessageSpec(text=fallback_summary)]
@@ -239,17 +384,20 @@ async def _complete_done_run(
         await send_agent_messages(session=session, settings=settings, telegram=telegram, run=run, output=final_output)
     except Exception as exc:
         _fail_run(session, run, str(exc))
-        phase = "after commit/no-op handling" if commit_boundary_finished else "before commit"
-        await send_agent_messages(
-            session=session,
-            settings=settings,
-            telegram=telegram,
-            run=run,
-            output=AgentTurnOutput(
-                status="blocked",
-                telegram_messages=[TelegramMessageSpec(text=f"Opinion run failed {phase}: {exc}")],
-            ),
-        )
+        if run.cycle_id:
+            await send_cycle_failure_notice(session=session, settings=settings, telegram=telegram, run=run)
+        else:
+            phase = "after commit handling" if commit_boundary_finished else "before commit"
+            await send_agent_messages(
+                session=session,
+                settings=settings,
+                telegram=telegram,
+                run=run,
+                output=AgentTurnOutput(
+                    status="blocked",
+                    telegram_messages=[TelegramMessageSpec(text=f"Opinion run failed {phase}.")],
+                ),
+            )
         raise
 
 
@@ -321,6 +469,32 @@ async def send_agent_messages(
             run_id=run.id,
             spec=spec,
         )
+
+
+async def send_cycle_failure_notice(
+    *,
+    session: Session,
+    settings: Settings,
+    telegram: TelegramSender,
+    run: OpinionRun,
+) -> None:
+    if not run.cycle_id:
+        return
+    cycle = session.get(OpinionCycle, run.cycle_id)
+    code = cycle.failure_code if cycle and cycle.failure_code else "run_failed"
+    await _send_idempotent(
+        session=session,
+        settings=settings,
+        telegram=telegram,
+        key=f"opinion-cycle:{run.cycle_id}:batch:{run.batch}:stopped:{code}",
+        run_id=run.id,
+        spec=TelegramMessageSpec(
+            text=(
+                f"Opinion cycle {run.cycle_id} stopped at batch {run.batch}. "
+                f"Failure code: {code}. Retry with: opinions-agent retry-cycle {run.cycle_id}"
+            )
+        ),
+    )
 
 
 def _write_initial_telegram_review(run_dir: Path, output: AgentTurnOutput) -> None:
@@ -562,14 +736,21 @@ async def _resume_from_telegram(
         return result
     except Exception as exc:
         _fail_run(session, run, str(exc))
+        await send_cycle_failure_notice(session=session, settings=settings, telegram=telegram, run=run)
         raise
 
 
 def _claim_awaiting_run(session: Session, run: OpinionRun) -> bool:
+    now = utcnow()
     result = session.execute(
         update(OpinionRun)
         .where(OpinionRun.id == run.id, OpinionRun.status == RunStatus.AWAITING_USER.value)
-        .values(status=RunStatus.RUNNING_AGENT.value, updated_at=utcnow())
+        .values(
+            status=RunStatus.RUNNING_AGENT.value,
+            lease_owner=uuid4().hex,
+            lease_expires_at=now + timedelta(minutes=15),
+            updated_at=now,
+        )
     )
     session.commit()
     if int(getattr(result, "rowcount", 0)) != 1:
@@ -732,19 +913,17 @@ def _responses_prompt(session: Session, run: OpinionRun) -> str:
 
 def _run_dir(run: OpinionRun, settings: Settings) -> Path:
     configured = (run.input_paths or {}).get("dir")
-    return Path(configured) if configured else RunPaths(settings.runs_dir).active_run_dir(run.id)
+    if configured:
+        path = Path(configured)
+        if path.exists() or not run.cycle_id:
+            return path
+    if run.cycle_id:
+        return settings.runs_dir / "completed" / run.cycle_id / "batches" / str(run.batch)
+    return RunPaths(settings.runs_dir).active_run_dir(run.id)
 
 
 def _ensure_utc(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
-
-
-def _advance_workflow_cursor(settings: Settings, run: OpinionRun) -> None:
-    corpus = CorpusPaths(settings.opinions_data_dir)
-    state = load_state(corpus)
-    state.workflow.last_completed_window_start = iso_utc(_ensure_utc(run.window_start))
-    state.workflow.last_completed_window_end = iso_utc(_ensure_utc(run.window_end))
-    save_state(corpus, state)
 
 
 def _finalize_run_artifacts(
@@ -773,7 +952,88 @@ def _finalize_run_artifacts(
 def _fail_run(session: Session, run: OpinionRun, reason: str) -> None:
     if run.status in NON_TERMINAL_RUN_STATUSES:
         run.status = RunStatus.FAILED.value
-    run.failure_reason = reason
+    run.failure_reason = "run_failed" if run.cycle_id else reason
+    _stop_cycle(session, run, "run_failed", "The opinion run stopped and needs recovery.")
+    session.commit()
+
+
+def _set_batch_status(session: Session, run: OpinionRun, status: BatchStatus) -> None:
+    if not run.cycle_id:
+        return
+    batch = session.scalar(
+        select(OpinionBatch).where(
+            OpinionBatch.cycle_id == run.cycle_id,
+            OpinionBatch.batch_number == run.batch,
+        )
+    )
+    if batch is not None:
+        batch.status = status.value
+
+
+def _stop_cycle(session: Session, run: OpinionRun, code: str, summary: str) -> None:
+    if not run.cycle_id:
+        return
+    cycle = session.get(OpinionCycle, run.cycle_id)
+    if cycle is not None:
+        cycle.status = CycleStatus.STOPPED.value
+        cycle.failure_code = code
+        cycle.failure_summary = summary
+    _set_batch_status(session, run, BatchStatus.STOPPED)
+
+
+def _complete_cycle_batch(
+    session: Session,
+    settings: Settings,
+    run: OpinionRun,
+    commit_sha: str | None,
+    validation_summary: str,
+) -> None:
+    from opinions_agent.cycles import complete_cycle_directory
+    from opinions_agent.fsio import write_json_atomic
+
+    if not run.cycle_id:
+        return
+    cycle = session.get(OpinionCycle, run.cycle_id)
+    batch = session.scalar(
+        select(OpinionBatch).where(
+            OpinionBatch.cycle_id == run.cycle_id,
+            OpinionBatch.batch_number == run.batch,
+        )
+    )
+    if cycle is None or batch is None:
+        raise ValueError("cycle batch state is missing")
+    batch.status = BatchStatus.COMPLETED.value
+    batch.successful_run_id = run.id
+    run_dir = _run_dir(run, settings)
+    batch.bundle_path = str(run_dir)
+    write_json_atomic(
+        run_dir / "final.json",
+        {
+            "run_id": run.id,
+            "status": RunStatus.COMPLETED.value,
+            "commit_sha": commit_sha,
+            "validation": validation_summary,
+        },
+    )
+    next_batch = session.scalar(
+        select(OpinionBatch).where(
+            OpinionBatch.cycle_id == cycle.id,
+            OpinionBatch.batch_number == run.batch + 1,
+        )
+    )
+    if next_batch is not None:
+        next_batch.status = BatchStatus.QUEUED.value
+        cycle.current_batch = next_batch.batch_number
+        session.commit()
+        return
+    cycle.status = CycleStatus.COMPLETED.value
+    cycle.current_batch = cycle.batch_count
+    cycle.failure_code = None
+    cycle.failure_summary = None
+    session.commit()
+    completed_dir = complete_cycle_directory(settings, cycle.id)
+    for stored_batch in session.scalars(select(OpinionBatch).where(OpinionBatch.cycle_id == cycle.id)):
+        stored_batch.bundle_path = str(completed_dir / "batches" / str(stored_batch.batch_number))
     session.commit()
 
 

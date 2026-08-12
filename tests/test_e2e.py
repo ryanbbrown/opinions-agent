@@ -83,7 +83,7 @@ async def test_full_deterministic_e2e(session, settings: Settings, opinions_repo
     assert decisions[-1]["decision"] == "approved"
 
     state = load_state(paths)
-    assert state.workflow.last_completed_window_end == "2026-06-12T00:00:00+00:00"
+    assert "workflow" not in state.model_dump()
 
     files = set(run_git(opinions_repo, "diff", "--name-only", "HEAD~1", "HEAD").splitlines())
     assert files == {"OPINIONS.md", "OPINIONS_SOURCES.jsonl"}

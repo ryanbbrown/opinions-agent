@@ -51,7 +51,9 @@ def report(settings, ids: dict[str, str], name: str, golden: dict[str, str]) -> 
 
     print(f"{name}")
     print(f"  quality        {passes}/{len(targets)} = {passes / len(targets):.3f}")
-    print(f"  length         {mean(ratios):.2f}x golden   ({mean(len(t.split()) for t in written.values()):.0f}w vs {mean(len(golden[tid].split()) for tid in written):.0f}w)")
+    written_words = mean(len(text.split()) for text in written.values())
+    golden_words = mean(len(golden[target_id].split()) for target_id in written)
+    print(f"  length         {mean(ratios):.2f}x golden   ({written_words:.0f}w vs {golden_words:.0f}w)")
     print(f"  fits in tweet  {tweetable}/{len(written)}   (golden: {golden_tweetable}/{len(written)})")
 
 

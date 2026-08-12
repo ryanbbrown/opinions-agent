@@ -1,12 +1,11 @@
 [build]
-builder = "NIXPACKS"
+builder = "RAILPACK"
 
 [deploy]
-startCommand = "uv run opinions-agent serve"
+startCommand = "uv run opinions-agent init-runtime && uv run opinions-agent serve"
 healthcheckPath = "/healthz"
-healthcheckTimeout = 30
+healthcheckTimeout = 300
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 3
-
-[[services]]
-name = "opinions-agent"
+overlapSeconds = 0
+drainingSeconds = 30

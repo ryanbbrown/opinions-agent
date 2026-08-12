@@ -7,12 +7,14 @@ from pathlib import Path
 from typing import Any
 
 import uvicorn
+from sqlalchemy import select
 
 from opinions_agent.agent import DeterministicOpinionAgent, ThinHarnessOpinionAgent
 from opinions_agent.config import get_settings
 from opinions_agent.corpus import CorpusPaths, init_data_dirs
+from opinions_agent.cycles import retry_stopped_cycle, start_opinion_cycle
 from opinions_agent.db import init_db, make_engine, make_sessionmaker
-from opinions_agent.models import OpinionRun
+from opinions_agent.models import CycleStatus, OpinionCycle, OpinionRun
 from opinions_agent.reader import ReaderClient, parse_iso, sync_reader
 from opinions_agent.repo_checkout import ensure_opinions_repo
 from opinions_agent.sample_run import (
@@ -41,6 +43,10 @@ def main(argv: list[str] | None = None) -> None:
     subparsers.add_parser("init-db")
     subparsers.add_parser("init-runtime")
     subparsers.add_parser("sync")
+    subparsers.add_parser("opinion-cycle")
+    retry_cycle = subparsers.add_parser("retry-cycle")
+    retry_cycle.add_argument("cycle_id")
+    subparsers.add_parser("cron-trigger")
     run_parser = subparsers.add_parser("opinion-run")
     run_parser.add_argument("--deterministic-agent", action="store_true")
     run_parser.add_argument("--window-start", help="ISO timestamp lower bound override")
@@ -98,6 +104,9 @@ def main(argv: list[str] | None = None) -> None:
 
 async def _run(args: argparse.Namespace) -> None:
     settings = get_settings()
+    if args.command == "cron-trigger":
+        await _cron_trigger(settings)
+        return
     engine = make_engine(settings.database_url)
     SessionLocal = make_sessionmaker(engine)
     corpus = CorpusPaths(settings.opinions_data_dir)
@@ -106,10 +115,22 @@ async def _run(args: argparse.Namespace) -> None:
         init_db(engine)
         return
     if args.command == "init-runtime":
+        if settings.volume_mount_path is not None:
+            from opinions_agent.config import validate_web_settings
+
+            validate_web_settings(settings)
         init_data_dirs(corpus)
         RunPaths(settings.runs_dir).active_dir.mkdir(parents=True, exist_ok=True)
-        ensure_opinions_repo(settings)
         _migrate()
+        with SessionLocal() as session:
+            active_cycle = session.scalar(
+                select(OpinionCycle).where(
+                    OpinionCycle.status.in_(
+                        [CycleStatus.STARTING.value, CycleStatus.ACTIVE.value, CycleStatus.STOPPED.value]
+                    )
+                )
+            )
+        ensure_opinions_repo(settings, refresh=active_cycle is None)
         print("runtime initialized")
         return
     if args.command == "sync":
@@ -118,6 +139,22 @@ async def _run(args: argparse.Namespace) -> None:
             f"fetched {result.fetched_rows} rows: "
             f"{result.new_documents} new documents, {result.new_highlights} new highlights"
         )
+        return
+    if args.command == "opinion-cycle":
+        with SessionLocal() as session:
+            result = await start_opinion_cycle(
+                session=session,
+                settings=settings,
+                sync_corpus=lambda: sync_reader(ReaderClient(settings.readwise_token), corpus),
+            )
+        print(
+            f"cycle {result.cycle_id}: {result.status}, {result.batch_count} batches, {result.result_code}"
+        )
+        return
+    if args.command == "retry-cycle":
+        with SessionLocal() as session:
+            batch = retry_stopped_cycle(session, args.cycle_id)
+        print(f"queued cycle {args.cycle_id} batch {batch.batch_number}")
         return
     if args.command == "sample-run":
         if args.sync:
@@ -299,7 +336,28 @@ def _migrate() -> None:
 
     from alembic import command
 
-    command.upgrade(Config("alembic.ini"), "head")
+    project_root = Path(__file__).resolve().parents[2]
+    command.upgrade(Config(str(project_root / "alembic.ini")), "head")
+
+
+async def _cron_trigger(settings) -> None:
+    import httpx
+
+    from opinions_agent.config import validate_cron_settings
+
+    validate_cron_settings(settings)
+    async with httpx.AsyncClient(timeout=600) as client:
+        response = await client.post(
+            settings.opinions_start_url,
+            headers={"Authorization": f"Bearer {settings.opinions_start_secret}"},
+        )
+    if response.status_code not in {200, 202}:
+        raise SystemExit(f"cycle start failed with HTTP {response.status_code}")
+    payload = response.json()
+    print(
+        f"cycle {payload.get('cycle_id')}: {payload.get('status')}, "
+        f"{payload.get('batch_count')} batches, {payload.get('result_code')}"
+    )
 
 
 async def _poll(settings, SessionLocal, *, once: bool) -> None:

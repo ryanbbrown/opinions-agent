@@ -162,7 +162,7 @@ async def test_callback_resumes_agent_then_validates_commits_and_records_durabil
     assert {"opinion-000003"} == {row["opinion_id"] for row in sources if row["evidence_id"] == "rw:h0"}
     assert read_json(CorpusPaths(settings.opinions_data_dir).opinion_id_high_water)["highest"] == 3
     state = load_state(CorpusPaths(settings.opinions_data_dir))
-    assert state.workflow.last_completed_window_end == "2026-06-12T00:00:00+00:00"
+    assert "workflow" not in state.model_dump()
     committed_files = set(run_git(opinions_repo, "diff", "--name-only", "HEAD~1", "HEAD").splitlines())
     assert committed_files == {"OPINIONS.md", "OPINIONS_SOURCES.jsonl"}
     assert run_git(opinions_repo, "status", "--porcelain") == "M UNRELATED.md"

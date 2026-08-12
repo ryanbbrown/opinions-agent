@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +19,20 @@ class GitCommitResult:
     commit_sha: str | None
 
 
+def git_credential_env(token: str) -> dict[str, str]:
+    env = dict(os.environ)
+    if not token:
+        return env
+    askpass = Path(__file__).resolve().parents[1] / "git_askpass.py"
+    env.update({"GIT_ASKPASS": str(askpass), "GIT_TERMINAL_PROMPT": "0", "OPINIONS_GIT_TOKEN": token})
+    return env
+
+
+def redact_git_error(message: str, token: str = "") -> str:
+    redacted = message.replace(token, "[REDACTED]") if token else message
+    return re.sub(r"https?://[^\s/@]+:[^\s/@]+@", "https://[REDACTED]@", redacted)
+
+
 def run_git(repo_dir: Path, *args: str, env: dict[str, str] | None = None) -> str:
     result = subprocess.run(
         ["git", "-C", str(repo_dir), *args],
@@ -27,7 +42,8 @@ def run_git(repo_dir: Path, *args: str, env: dict[str, str] | None = None) -> st
         env=env,
     )
     if result.returncode != 0:
-        raise GitToolError((result.stderr or result.stdout).strip())
+        token = (env or {}).get("OPINIONS_GIT_TOKEN", "")
+        raise GitToolError(redact_git_error((result.stderr or result.stdout).strip(), token))
     return result.stdout.strip()
 
 
@@ -54,6 +70,7 @@ def commit_and_push_opinions_files(
     author_email: str,
     message: str,
     push: bool = True,
+    git_token: str = "",
 ) -> GitCommitResult:
     if not author_name or not author_email:
         raise GitToolError("git author name/email are required")
@@ -65,8 +82,9 @@ def commit_and_push_opinions_files(
     unrelated_staged = [line for line in staged_before.splitlines() if line and line not in target_files]
     if unrelated_staged:
         raise GitToolError(f"refusing unrelated staged files: {unrelated_staged}")
+    credential_env = git_credential_env(git_token)
     if push:
-        run_git(repo_dir, "fetch", "origin", branch)
+        run_git(repo_dir, "fetch", "origin", branch, env=credential_env)
     unstaged_status = run_git(repo_dir, "status", "--porcelain", "--", *target_files)
     if not unstaged_status:
         return GitCommitResult(changed=False, commit_sha=None)
@@ -77,7 +95,7 @@ def commit_and_push_opinions_files(
         run_git(repo_dir, "reset", "--", *target_files)
         raise GitToolError(f"refusing to commit files other than {target_files}: {staged}")
     env = {
-        **os.environ,
+        **credential_env,
         "GIT_AUTHOR_NAME": author_name,
         "GIT_AUTHOR_EMAIL": author_email,
         "GIT_COMMITTER_NAME": author_name,
@@ -86,5 +104,5 @@ def commit_and_push_opinions_files(
     run_git(repo_dir, "commit", "-m", message, "--", *target_files, env=env)
     sha = run_git(repo_dir, "rev-parse", "HEAD")
     if push:
-        run_git(repo_dir, "push", "origin", branch)
+        run_git(repo_dir, "push", "origin", branch, env=credential_env)
     return GitCommitResult(changed=True, commit_sha=sha)

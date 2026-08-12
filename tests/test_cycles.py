@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy import select
 
+from opinions_agent.agent import DeterministicOpinionAgent
 from opinions_agent.config import Settings
 from opinions_agent.corpus import (
     CorpusPaths,
@@ -13,9 +14,12 @@ from opinions_agent.corpus import (
     upsert_documents,
     upsert_highlights,
 )
-from opinions_agent.cycles import evidence_fingerprint, partition_evidence, start_cycle_from_corpus
+from opinions_agent.cycles import evidence_fingerprint, partition_evidence, start_cycle_from_corpus, start_opinion_cycle
 from opinions_agent.fsio import read_jsonl
-from opinions_agent.models import BatchStatus, OpinionBatch, OpinionCycle, OpinionEvidenceAssignment
+from opinions_agent.models import BatchStatus, CycleStatus, OpinionBatch, OpinionCycle, OpinionEvidenceAssignment
+from opinions_agent.telegram import FakeTelegramClient
+from opinions_agent.worker import process_queued_once
+from opinions_agent.workflow import handle_telegram_update
 
 
 def rows(sizes: list[int]) -> list[HighlightRow]:
@@ -118,3 +122,98 @@ def test_cycle_materializes_all_batches_and_assigns_versions(session, settings: 
     )
     assert duplicate.cycle_id == result.cycle_id
     assert duplicate.created is False
+
+
+async def test_worker_continues_batches_after_telegram_completion(
+    session,
+    settings: Settings,
+    opinions_repo,
+) -> None:
+    settings = settings.__class__(
+        **{
+            **settings.__dict__,
+            "initial_evidence_after": "2026-06-01T00:00:00+00:00",
+        }
+    )
+    corpus = CorpusPaths(settings.opinions_data_dir)
+    init_data_dirs(corpus)
+    evidence = rows([25, 25])
+    upsert_documents(
+        corpus,
+        [
+            DocumentRow(document_id=f"reader:{index:03d}", reader_id=str(index), title=f"Doc {index}")
+            for index in range(2)
+        ],
+    )
+    upsert_highlights(corpus, evidence)
+    result = start_cycle_from_corpus(
+        session=session,
+        settings=settings,
+        now=datetime(2026, 6, 12, tzinfo=UTC),
+    )
+    telegram = FakeTelegramClient()
+    agent = DeterministicOpinionAgent()
+
+    assert await process_queued_once(session, settings, agent, telegram) is True
+    assert await handle_telegram_update(
+        session=session,
+        settings=settings,
+        agent=agent,
+        telegram=telegram,
+        update={"update_id": 1, "message": {"message_id": 1, "chat": {"id": 12345}, "text": "GO"}},
+    ) == "go"
+    batches = list(
+        session.scalars(
+            select(OpinionBatch).where(OpinionBatch.cycle_id == result.cycle_id).order_by(OpinionBatch.batch_number)
+        )
+    )
+    assert [batch.status for batch in batches] == [BatchStatus.COMPLETED.value, BatchStatus.QUEUED.value]
+
+    assert await process_queued_once(session, settings, agent, telegram) is True
+    assert await handle_telegram_update(
+        session=session,
+        settings=settings,
+        agent=agent,
+        telegram=telegram,
+        update={"update_id": 2, "message": {"message_id": 2, "chat": {"id": 12345}, "text": "GO"}},
+    ) == "go"
+    cycle = session.get(OpinionCycle, result.cycle_id)
+    assert cycle is not None and cycle.status == CycleStatus.COMPLETED.value
+    assert (settings.runs_dir / "completed" / result.cycle_id).is_dir()
+
+
+async def test_cycle_reserves_before_sync_and_duplicate_does_not_sync(
+    session,
+    settings: Settings,
+) -> None:
+    settings = settings.__class__(
+        **{**settings.__dict__, "initial_evidence_after": "2026-06-01T00:00:00+00:00"}
+    )
+    corpus = CorpusPaths(settings.opinions_data_dir)
+    init_data_dirs(corpus)
+    calls = 0
+
+    async def sync() -> None:
+        nonlocal calls
+        calls += 1
+        reserved = session.scalar(select(OpinionCycle))
+        assert reserved is not None and reserved.status == CycleStatus.STARTING.value
+        upsert_documents(corpus, [DocumentRow(document_id="reader:000", reader_id="0", title="Doc")])
+        upsert_highlights(corpus, rows([1]))
+
+    first = await start_opinion_cycle(
+        session=session,
+        settings=settings,
+        sync_corpus=sync,
+        now=datetime(2026, 6, 12, tzinfo=UTC),
+    )
+    second = await start_opinion_cycle(
+        session=session,
+        settings=settings,
+        sync_corpus=sync,
+        now=datetime(2026, 6, 12, 1, tzinfo=UTC),
+    )
+
+    assert calls == 1
+    assert first.created is True
+    assert second.cycle_id == first.cycle_id and second.created is False

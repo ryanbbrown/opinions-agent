@@ -1,4 +1,4 @@
-"""Durable filesystem corpus: documents, highlights, decisions, and sync/workflow state."""
+"""Durable filesystem corpus: documents, highlights, decisions, and Reader sync state."""
 
 from __future__ import annotations
 
@@ -101,15 +101,9 @@ class SyncState(BaseModel):
     last_success_at: str | None = None
 
 
-class WorkflowState(BaseModel):
-    last_completed_window_start: str | None = None
-    last_completed_window_end: str | None = None
-
-
 class CorpusState(BaseModel):
     schema_version: int = SCHEMA_VERSION
     sync: SyncState = Field(default_factory=SyncState)
-    workflow: WorkflowState = Field(default_factory=WorkflowState)
 
 
 class OpinionDecision(BaseModel):

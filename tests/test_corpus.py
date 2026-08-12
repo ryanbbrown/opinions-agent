@@ -60,13 +60,12 @@ def test_state_roundtrip(paths: CorpusPaths) -> None:
     state = load_state(paths)
     assert state == CorpusState()
     state.sync.reader_updated_after = "2026-06-12T10:00:00+00:00"
-    state.workflow.last_completed_window_end = "2026-06-12T00:00:00+00:00"
     save_state(paths, state)
     loaded = load_state(paths)
     assert loaded.sync.reader_updated_after == "2026-06-12T10:00:00+00:00"
-    assert loaded.workflow.last_completed_window_end == "2026-06-12T00:00:00+00:00"
     raw = json.loads(paths.state.read_text(encoding="utf-8"))
     assert raw["schema_version"] == 1
+    assert "workflow" not in raw
 
 
 def test_document_and_highlight_upserts_do_not_duplicate(paths: CorpusPaths) -> None:

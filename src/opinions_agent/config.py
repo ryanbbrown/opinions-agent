@@ -145,6 +145,8 @@ def validate_web_settings(settings: Settings) -> None:
         raise ValueError(f"{settings.environment} requires OPINIONS_TARGET_FILE={expected_target}")
     if settings.opinions_sources_file != "OPINIONS_SOURCES.jsonl":
         raise ValueError("Railway web requires OPINIONS_SOURCES_FILE=OPINIONS_SOURCES.jsonl")
+    if settings.environment == "prod" and not (settings.braintrust_api_key and settings.braintrust_project_id):
+        raise ValueError("production requires BRAINTRUST_API_KEY and BRAINTRUST_PROJECT_ID")
 
 
 def validate_cron_settings(settings: Settings) -> None:

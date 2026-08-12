@@ -6,12 +6,13 @@ import hashlib
 import json
 import math
 import shutil
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -19,15 +20,17 @@ from opinions_agent.config import Settings
 from opinions_agent.corpus import CorpusPaths, HighlightRow, document_by_id, read_highlights
 from opinions_agent.fsio import write_jsonl_atomic, write_text_atomic
 from opinions_agent.models import (
+    NON_TERMINAL_RUN_STATUSES,
     BatchStatus,
     CycleStatus,
     OpinionBatch,
     OpinionCycle,
     OpinionEvidenceAssignment,
+    OpinionRun,
     WorkflowLease,
 )
 from opinions_agent.reader import iso_utc, parse_iso
-from opinions_agent.selection import _is_backfill_document
+from opinions_agent.selection import _document_summary_evidence, _is_backfill_document
 
 MAX_DOCUMENTS = 20
 MAX_EVIDENCE_ROWS = 50
@@ -174,15 +177,18 @@ def acquire_lease(
     now: datetime,
     duration: timedelta = timedelta(minutes=15),
 ) -> bool:
-    lease = session.get(WorkflowLease, name)
-    if lease is not None and lease.expires_at > now and lease.owner_token != owner_token:
-        return False
-    if lease is None:
-        lease = WorkflowLease(name=name, owner_token=owner_token, expires_at=now + duration)
-        session.add(lease)
-    else:
-        lease.owner_token = owner_token
-        lease.expires_at = now + duration
+    result = session.execute(
+        update(WorkflowLease)
+        .where(
+            WorkflowLease.name == name,
+            or_(WorkflowLease.expires_at <= now, WorkflowLease.owner_token == owner_token),
+        )
+        .values(owner_token=owner_token, expires_at=now + duration, updated_at=now)
+    )
+    if int(getattr(result, "rowcount", 0)) == 1:
+        session.commit()
+        return True
+    session.add(WorkflowLease(name=name, owner_token=owner_token, expires_at=now + duration))
     try:
         session.commit()
     except IntegrityError:
@@ -246,6 +252,8 @@ def start_cycle_from_corpus(
         _materialize_cycle(session, settings, cycle, versions, batches)
         cycle.status = CycleStatus.ACTIVE.value if batches else CycleStatus.COMPLETED.value
         session.commit()
+        if not batches:
+            complete_cycle_directory(settings, cycle.id)
         return CycleStartResult(
             cycle_id=cycle.id,
             status=cycle.status,
@@ -253,6 +261,72 @@ def start_cycle_from_corpus(
             result_code="created" if batches else "no_evidence",
             created=True,
         )
+    finally:
+        release_lease(session, "opinion-cycle-start", owner)
+
+
+async def start_opinion_cycle(
+    *,
+    session: Session,
+    settings: Settings,
+    sync_corpus: Callable[[], Awaitable[object]],
+    now: datetime | None = None,
+) -> CycleStartResult:
+    """Reserve a weekly cycle before sync, then freeze and assign its corpus snapshot."""
+    current = (now or datetime.now(UTC)).astimezone(UTC)
+    owner = uuid4().hex
+    if not acquire_lease(session, "opinion-cycle-start", owner_token=owner, now=current):
+        existing = _unfinished_cycle(session)
+        if existing is None:
+            raise RuntimeError("another cycle start owns the start lease")
+        return _existing_result(existing)
+    cycle: OpinionCycle | None = None
+    try:
+        existing_week = session.scalar(select(OpinionCycle).where(OpinionCycle.week_key == week_key(current)))
+        if existing_week is not None:
+            return _existing_result(existing_week)
+        unfinished = _unfinished_cycle(session)
+        if unfinished is not None:
+            return _existing_result(unfinished)
+        previous = session.scalar(
+            select(OpinionCycle)
+            .where(OpinionCycle.status == CycleStatus.COMPLETED.value)
+            .order_by(OpinionCycle.window_end.desc())
+        )
+        boundary = parse_iso(settings.initial_evidence_after)
+        if previous is None and boundary is None:
+            raise ValueError("OPINIONS_INITIAL_EVIDENCE_AFTER is required for the first cycle")
+        cycle = OpinionCycle(
+            week_key=week_key(current),
+            status=CycleStatus.STARTING.value,
+            window_start=previous.window_end if previous else boundary,
+            window_end=current,
+            initial_evidence_after=boundary if previous is None else previous.initial_evidence_after,
+        )
+        session.add(cycle)
+        session.commit()
+        await sync_corpus()
+        versions = _eligible_versions(session, settings, cycle)
+        batches = partition_evidence([version.row for version in versions])
+        _materialize_cycle(session, settings, cycle, versions, batches)
+        cycle.status = CycleStatus.ACTIVE.value if batches else CycleStatus.COMPLETED.value
+        session.commit()
+        if not batches:
+            complete_cycle_directory(settings, cycle.id)
+        return CycleStartResult(
+            cycle_id=cycle.id,
+            status=cycle.status,
+            batch_count=cycle.batch_count,
+            result_code="created" if batches else "no_evidence",
+            created=True,
+        )
+    except Exception:
+        if cycle is not None:
+            cycle.status = CycleStatus.STOPPED.value
+            cycle.failure_code = "snapshot_failed"
+            cycle.failure_summary = "The weekly evidence snapshot failed. Retry the stopped cycle."
+            session.commit()
+        raise
     finally:
         release_lease(session, "opinion-cycle-start", owner)
 
@@ -278,7 +352,7 @@ def _eligible_versions(session: Session, settings: Settings, cycle: OpinionCycle
     assignments = {(row.evidence_id, row.fingerprint) for row in session.scalars(select(OpinionEvidenceAssignment))}
     versions: list[EvidenceVersion] = []
     boundary = cycle.initial_evidence_after
-    for row in read_highlights(corpus):
+    for row in _corpus_evidence(corpus):
         if _is_backfill_document(documents.get(row.document_id)):
             continue
         fingerprint = evidence_fingerprint(row)
@@ -304,6 +378,20 @@ def _eligible_versions(session: Session, settings: Settings, cycle: OpinionCycle
         )
     )
     return versions
+
+
+def _corpus_evidence(corpus: CorpusPaths) -> list[HighlightRow]:
+    highlights = read_highlights(corpus)
+    document_ids_with_evidence = {row.document_id for row in highlights}
+    rows = list(highlights)
+    for document in document_by_id(corpus).values():
+        if document.document_id in document_ids_with_evidence or _is_backfill_document(document):
+            continue
+        summary = (document.summary or "").strip()
+        saved_at = parse_iso(document.saved_at)
+        if document.tags and summary and saved_at is not None:
+            rows.append(_document_summary_evidence(document, summary, saved_at))
+    return rows
 
 
 def _materialize_cycle(
@@ -372,8 +460,35 @@ def _materialize_cycle(
 def complete_cycle_directory(settings: Settings, cycle_id: str) -> Path:
     active = settings.runs_dir / "active" / cycle_id
     completed = settings.runs_dir / "completed" / cycle_id
+    if completed.exists() and not active.exists():
+        return completed
     completed.parent.mkdir(parents=True, exist_ok=True)
     if completed.exists():
         shutil.rmtree(completed)
     active.rename(completed)
     return completed
+
+
+def retry_stopped_cycle(session: Session, cycle_id: str) -> OpinionBatch:
+    cycle = session.get(OpinionCycle, cycle_id)
+    if cycle is None:
+        raise ValueError(f"cycle not found: {cycle_id}")
+    if cycle.status != CycleStatus.STOPPED.value:
+        raise ValueError(f"cycle {cycle_id} is not stopped")
+    batch = session.scalar(
+        select(OpinionBatch).where(
+            OpinionBatch.cycle_id == cycle_id,
+            OpinionBatch.batch_number == cycle.current_batch,
+        )
+    )
+    if batch is None or batch.status != BatchStatus.STOPPED.value:
+        raise ValueError("stopped cycle has no retryable batch")
+    active = session.scalar(select(OpinionRun).where(OpinionRun.status.in_(NON_TERMINAL_RUN_STATUSES)))
+    if active is not None:
+        raise ValueError(f"run {active.id} is still active")
+    batch.status = BatchStatus.QUEUED.value
+    cycle.status = CycleStatus.ACTIVE.value
+    cycle.failure_code = None
+    cycle.failure_summary = None
+    session.commit()
+    return batch

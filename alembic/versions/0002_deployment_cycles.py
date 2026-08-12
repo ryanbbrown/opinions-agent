@@ -85,11 +85,12 @@ def upgrade() -> None:
     op.add_column("opinion_runs", sa.Column("decision_log_hash", sa.String(64)))
     op.create_foreign_key("fk_opinion_runs_cycle", "opinion_runs", "opinion_cycles", ["cycle_id"], ["id"])
     op.create_index("ix_opinion_runs_cycle_id", "opinion_runs", ["cycle_id"])
-    op.drop_constraint(
-        "opinion_proposals_opinion_run_id_batch_proposal_id_key",
-        "opinion_proposals",
-        type_="unique",
+    proposal_unique = next(
+        constraint["name"]
+        for constraint in sa.inspect(op.get_bind()).get_unique_constraints("opinion_proposals")
+        if constraint["column_names"] == ["opinion_run_id", "batch", "proposal_id"]
     )
+    op.drop_constraint(proposal_unique, "opinion_proposals", type_="unique")
     op.drop_column("opinion_proposals", "batch")
     op.create_unique_constraint(
         "uq_opinion_proposals_run_proposal",
