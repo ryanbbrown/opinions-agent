@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import pytest
 from sqlalchemy import select
 
 from opinions_agent.agent import DeterministicOpinionAgent
@@ -14,7 +15,13 @@ from opinions_agent.corpus import (
     upsert_documents,
     upsert_highlights,
 )
-from opinions_agent.cycles import evidence_fingerprint, partition_evidence, start_cycle_from_corpus, start_opinion_cycle
+from opinions_agent.cycles import (
+    evidence_fingerprint,
+    partition_evidence,
+    retry_stopped_snapshot,
+    start_cycle_from_corpus,
+    start_opinion_cycle,
+)
 from opinions_agent.fsio import read_jsonl
 from opinions_agent.models import BatchStatus, CycleStatus, OpinionBatch, OpinionCycle, OpinionEvidenceAssignment
 from opinions_agent.telegram import FakeTelegramClient
@@ -217,3 +224,46 @@ async def test_cycle_reserves_before_sync_and_duplicate_does_not_sync(
     assert calls == 1
     assert first.created is True
     assert second.cycle_id == first.cycle_id and second.created is False
+
+
+async def test_failed_snapshot_keeps_reservation_and_can_retry(
+    session,
+    settings: Settings,
+) -> None:
+    settings = settings.__class__(
+        **{**settings.__dict__, "initial_evidence_after": "2026-06-01T00:00:00+00:00"}
+    )
+    corpus = CorpusPaths(settings.opinions_data_dir)
+    init_data_dirs(corpus)
+
+    async def fail_sync() -> None:
+        upsert_documents(corpus, [DocumentRow(document_id="reader:000", reader_id="0", title="Doc")])
+        upsert_highlights(corpus, rows([1]))
+        raise RuntimeError("reader unavailable")
+
+    with pytest.raises(RuntimeError, match="reader unavailable"):
+        await start_opinion_cycle(
+            session=session,
+            settings=settings,
+            sync_corpus=fail_sync,
+            now=datetime(2026, 6, 12, tzinfo=UTC),
+        )
+    cycle = session.scalar(select(OpinionCycle))
+    assert cycle is not None
+    assert cycle.status == CycleStatus.STOPPED.value
+    assert cycle.failure_code == "snapshot_failed"
+    assert list(session.scalars(select(OpinionEvidenceAssignment))) == []
+
+    async def successful_sync() -> None:
+        return None
+
+    result = await retry_stopped_snapshot(
+        session=session,
+        settings=settings,
+        cycle_id=cycle.id,
+        sync_corpus=successful_sync,
+    )
+
+    assert result.result_code == "retried"
+    assert result.batch_count == 1
+    assert session.get(OpinionCycle, cycle.id).status == CycleStatus.ACTIVE.value

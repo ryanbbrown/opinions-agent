@@ -322,9 +322,14 @@ async def start_opinion_cycle(
         )
     except Exception:
         if cycle is not None:
-            cycle.status = CycleStatus.STOPPED.value
-            cycle.failure_code = "snapshot_failed"
-            cycle.failure_summary = "The weekly evidence snapshot failed. Retry the stopped cycle."
+            cycle_id = cycle.id
+            session.rollback()
+            stored_cycle = session.get(OpinionCycle, cycle_id)
+            if stored_cycle is None:
+                raise
+            stored_cycle.status = CycleStatus.STOPPED.value
+            stored_cycle.failure_code = "snapshot_failed"
+            stored_cycle.failure_summary = "The weekly evidence snapshot failed. Retry the stopped cycle."
             session.commit()
         raise
     finally:
@@ -351,7 +356,7 @@ def _eligible_versions(session: Session, settings: Settings, cycle: OpinionCycle
     documents = document_by_id(corpus)
     assignments = {(row.evidence_id, row.fingerprint) for row in session.scalars(select(OpinionEvidenceAssignment))}
     versions: list[EvidenceVersion] = []
-    boundary = cycle.initial_evidence_after
+    boundary = _ensure_utc(cycle.initial_evidence_after) if cycle.initial_evidence_after else None
     for row in _corpus_evidence(corpus):
         if _is_backfill_document(documents.get(row.document_id)):
             continue
@@ -373,7 +378,7 @@ def _eligible_versions(session: Session, settings: Settings, cycle: OpinionCycle
     session.commit()
     versions.sort(
         key=lambda version: (
-            parse_iso(version.row.highlighted_at) or cycle.window_end,
+            parse_iso(version.row.highlighted_at) or _ensure_utc(cycle.window_end),
             version.row.highlight_id,
         )
     )
@@ -392,6 +397,10 @@ def _corpus_evidence(corpus: CorpusPaths) -> list[HighlightRow]:
         if document.tags and summary and saved_at is not None:
             rows.append(_document_summary_evidence(document, summary, saved_at))
     return rows
+
+
+def _ensure_utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 def _materialize_cycle(
@@ -492,3 +501,55 @@ def retry_stopped_cycle(session: Session, cycle_id: str) -> OpinionBatch:
     cycle.failure_summary = None
     session.commit()
     return batch
+
+
+async def retry_stopped_snapshot(
+    *,
+    session: Session,
+    settings: Settings,
+    cycle_id: str,
+    sync_corpus: Callable[[], Awaitable[object]],
+) -> CycleStartResult:
+    """Rebuild a reserved cycle whose sync or bundle creation stopped before batch one."""
+    cycle = session.get(OpinionCycle, cycle_id)
+    if cycle is None:
+        raise ValueError(f"cycle not found: {cycle_id}")
+    if cycle.status != CycleStatus.STOPPED.value or cycle.failure_code != "snapshot_failed":
+        raise ValueError(f"cycle {cycle_id} has no failed snapshot")
+    if session.scalar(select(OpinionBatch).where(OpinionBatch.cycle_id == cycle_id)) is not None:
+        raise ValueError("cycle already has a retryable batch")
+    owner = uuid4().hex
+    now = datetime.now(UTC)
+    if not acquire_lease(session, "opinion-cycle-start", owner_token=owner, now=now):
+        raise RuntimeError("another cycle start owns the start lease")
+    try:
+        cycle.status = CycleStatus.STARTING.value
+        cycle.failure_code = None
+        cycle.failure_summary = None
+        session.commit()
+        await sync_corpus()
+        versions = _eligible_versions(session, settings, cycle)
+        batches = partition_evidence([version.row for version in versions])
+        _materialize_cycle(session, settings, cycle, versions, batches)
+        cycle.status = CycleStatus.ACTIVE.value if batches else CycleStatus.COMPLETED.value
+        session.commit()
+        if not batches:
+            complete_cycle_directory(settings, cycle.id)
+        return CycleStartResult(
+            cycle_id=cycle.id,
+            status=cycle.status,
+            batch_count=cycle.batch_count,
+            result_code="retried" if batches else "no_evidence",
+            created=False,
+        )
+    except Exception:
+        session.rollback()
+        cycle = session.get(OpinionCycle, cycle_id)
+        if cycle is not None:
+            cycle.status = CycleStatus.STOPPED.value
+            cycle.failure_code = "snapshot_failed"
+            cycle.failure_summary = "The weekly evidence snapshot failed. Retry the stopped cycle."
+            session.commit()
+        raise
+    finally:
+        release_lease(session, "opinion-cycle-start", owner)

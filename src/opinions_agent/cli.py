@@ -12,7 +12,7 @@ from sqlalchemy import select
 from opinions_agent.agent import DeterministicOpinionAgent, ThinHarnessOpinionAgent
 from opinions_agent.config import get_settings
 from opinions_agent.corpus import CorpusPaths, init_data_dirs
-from opinions_agent.cycles import retry_stopped_cycle, start_opinion_cycle
+from opinions_agent.cycles import retry_stopped_cycle, retry_stopped_snapshot, start_opinion_cycle
 from opinions_agent.db import init_db, make_engine, make_sessionmaker
 from opinions_agent.models import CycleStatus, OpinionCycle, OpinionRun
 from opinions_agent.reader import ReaderClient, parse_iso, sync_reader
@@ -153,8 +153,18 @@ async def _run(args: argparse.Namespace) -> None:
         return
     if args.command == "retry-cycle":
         with SessionLocal() as session:
-            batch = retry_stopped_cycle(session, args.cycle_id)
-        print(f"queued cycle {args.cycle_id} batch {batch.batch_number}")
+            cycle = session.get(OpinionCycle, args.cycle_id)
+            if cycle is not None and cycle.failure_code == "snapshot_failed":
+                result = await retry_stopped_snapshot(
+                    session=session,
+                    settings=settings,
+                    cycle_id=args.cycle_id,
+                    sync_corpus=lambda: sync_reader(ReaderClient(settings.readwise_token), corpus),
+                )
+                print(f"cycle {result.cycle_id}: {result.status}, {result.batch_count} batches, {result.result_code}")
+            else:
+                batch = retry_stopped_cycle(session, args.cycle_id)
+                print(f"queued cycle {args.cycle_id} batch {batch.batch_number}")
         return
     if args.command == "sample-run":
         if args.sync:
