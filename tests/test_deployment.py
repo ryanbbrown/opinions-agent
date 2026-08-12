@@ -16,6 +16,7 @@ import opinions_agent.worker as worker_module
 from opinions_agent.cli import _cron_trigger
 from opinions_agent.config import Settings, get_settings, validate_cron_settings, validate_web_settings
 from opinions_agent.corpus import CorpusPaths, init_data_dirs
+from opinions_agent.db import make_engine
 from opinions_agent.diagnostics import log_operational_failure
 from opinions_agent.fsio import write_json_atomic
 from opinions_agent.models import CycleStatus, GitPhase, OpinionCycle, OpinionRun, RunStatus
@@ -24,6 +25,14 @@ from opinions_agent.repo_checkout import ensure_opinions_repo
 from opinions_agent.telegram import FakeTelegramClient
 from opinions_agent.tools.git_ops import commit_and_push_opinions_files, run_git
 from opinions_agent.workflow import abandon_run, send_cycle_failure_notice
+
+
+@pytest.mark.parametrize("database_url", ["postgresql://db/service", "postgres://db/service"])
+def test_make_engine_uses_installed_psycopg_driver_for_railway_urls(database_url: str) -> None:
+    engine = make_engine(database_url)
+
+    assert engine.url.drivername == "postgresql+psycopg"
+    engine.dispose()
 
 
 def railway_settings(settings: Settings, tmp_path: Path, *, environment: str) -> Settings:
