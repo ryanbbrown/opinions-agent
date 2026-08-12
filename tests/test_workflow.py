@@ -7,6 +7,7 @@ import pytest
 from conftest import seed_corpus
 from sqlalchemy import select
 
+import opinions_agent.workflow as workflow_module
 from opinions_agent.agent import (
     AgentReadContext,
     AgentTurnOutput,
@@ -21,6 +22,7 @@ from opinions_agent.models import OpinionRun, RunStatus, TelegramInteraction
 from opinions_agent.selection import RunPaths
 from opinions_agent.telegram import FakeTelegramClient
 from opinions_agent.tools.git_ops import run_git
+from opinions_agent.worker import reconcile_startup
 from opinions_agent.workflow import (
     ActiveRunError,
     handle_telegram_update,
@@ -402,6 +404,15 @@ class EmptyMessageAddOpinionAgent(OpinionAgent):
         return AgentTurnOutput(status="done", telegram_messages=[]), None
 
 
+class CountingAddOpinionAgent(EmptyMessageAddOpinionAgent):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def run_turn(self, **kwargs):
+        self.calls += 1
+        return await super().run_turn(**kwargs)
+
+
 async def test_done_without_artifact_changes_completes_without_commit_sha(
     session, settings: Settings, opinions_repo: Path
 ) -> None:
@@ -431,6 +442,86 @@ async def test_done_without_agent_message_sends_fallback_completion_summary(
         telegram.sent[-1][1].text
     )
     assert "Durability: commit " in telegram.sent[-1][1].text
+
+
+async def test_local_commit_failure_reconciles_without_another_agent_turn(
+    session,
+    settings: Settings,
+    opinions_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seed_corpus(settings)
+    agent = CountingAddOpinionAgent()
+    real_run_git = workflow_module.run_git
+
+    def fail_push(repo_dir, *args, **kwargs):
+        if args and args[0] == "push":
+            raise RuntimeError("push interrupted")
+        return real_run_git(repo_dir, *args, **kwargs)
+
+    monkeypatch.setattr(workflow_module, "run_git", fail_push)
+    with pytest.raises(RuntimeError, match="push interrupted"):
+        await start_run(session, settings, FakeTelegramClient(), agent)
+    run = session.scalar(select(OpinionRun))
+    assert run is not None and run.status == RunStatus.FAILED.value
+    assert run.git_phase == "committed"
+
+    monkeypatch.setattr(workflow_module, "run_git", real_run_git)
+    assert reconcile_startup(session, settings) == []
+
+    assert run.status == RunStatus.COMPLETED.value
+    assert agent.calls == 1
+    assert run_git(opinions_repo, "rev-list", "--count", "origin/main") == "2"
+    assert (RunPaths(settings.runs_dir).completed_run_dir(run.id) / "final.json").is_file()
+
+
+async def test_pushed_commit_failure_reconciles_without_another_agent_turn(
+    session,
+    settings: Settings,
+    opinions_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seed_corpus(settings)
+    agent = CountingAddOpinionAgent()
+    real_update = workflow_module.update_opinion_id_high_water
+    monkeypatch.setattr(
+        workflow_module,
+        "update_opinion_id_high_water",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("database completion interrupted")),
+    )
+
+    with pytest.raises(RuntimeError, match="database completion interrupted"):
+        await start_run(session, settings, FakeTelegramClient(), agent)
+    run = session.scalar(select(OpinionRun))
+    assert run is not None and run.status == RunStatus.FAILED.value
+    assert run.git_phase == "pushed"
+
+    monkeypatch.setattr(workflow_module, "update_opinion_id_high_water", real_update)
+    assert reconcile_startup(session, settings) == []
+
+    assert run.status == RunStatus.COMPLETED.value
+    assert agent.calls == 1
+    assert run_git(opinions_repo, "rev-list", "--count", "origin/main") == "2"
+    assert (RunPaths(settings.runs_dir).completed_run_dir(run.id) / "final.json").is_file()
+
+
+async def test_final_telegram_failure_does_not_stop_a_database_completed_run(
+    session,
+    settings: Settings,
+    opinions_repo: Path,
+) -> None:
+    seed_corpus(settings)
+    agent = CountingAddOpinionAgent()
+
+    class FailingTelegram(FakeTelegramClient):
+        async def send_message(self, chat_id, spec):
+            raise RuntimeError("Telegram unavailable")
+
+    run = await start_run(session, settings, FailingTelegram(), agent)
+
+    assert run is not None and run.status == RunStatus.COMPLETED.value
+    assert agent.calls == 1
+    assert run_git(opinions_repo, "rev-list", "--count", "origin/main") == "2"
 
 
 class RemoveHighestOpinionAgent(OpinionAgent):
