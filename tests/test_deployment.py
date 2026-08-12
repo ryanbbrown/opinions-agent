@@ -544,10 +544,13 @@ def test_operational_failure_log_redacts_credentials_and_keeps_context(
         telegram_bot_token="telegram-secret",
         telegram_webhook_secret="webhook-secret",
         readwise_token="reader-secret",
+        braintrust_api_key="braintrust-secret",
+        database_url="postgresql+psycopg://db-user:db-secret@db.example/service",
     )
     error = RuntimeError(
-        "git-secret start-secret telegram-secret webhook-secret reader-secret "
-        "https://user:password@example.com/repo failed"
+        "git-secret start-secret telegram-secret webhook-secret reader-secret braintrust-secret "
+        "https://user:password@example.com/repo Authorization: Bearer other-secret "
+        "postgresql://another:database-secret@db.example/other failed"
     )
 
     with caplog.at_level(logging.ERROR):
@@ -564,5 +567,15 @@ def test_operational_failure_log_redacts_credentials_and_keeps_context(
     assert "phase=agent_turn" in caplog.text
     assert "exception=RuntimeError" in caplog.text
     assert "cycle_id=cycle-1 batch=2 run_id=run-1" in caplog.text
-    for secret in ("git-secret", "start-secret", "telegram-secret", "webhook-secret", "reader-secret", "password"):
+    for secret in (
+        "git-secret",
+        "start-secret",
+        "telegram-secret",
+        "webhook-secret",
+        "reader-secret",
+        "braintrust-secret",
+        "other-secret",
+        "database-secret",
+        "password",
+    ):
         assert secret not in caplog.text
