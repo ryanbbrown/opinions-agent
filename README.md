@@ -174,6 +174,8 @@ Create two Railway services from this repository. Give the web service `railway.
   runtime work (`init-runtime`), never build time.
 - Keep `OPINIONS_REPO_URL` free of credentials. Put a fine-grained repository token in `OPINIONS_GIT_TOKEN`.
   Grant it content read/write access only to the opinions repository.
+- Set `RAILPACK_DEPLOY_APT_PACKAGES=git` on the web service. The runtime uses git to clone and push the opinions
+  repository.
 - Set `OPENAI_API_KEY` for direct model access. Railway does not use local-only `cproxy` or Codex CLI authentication.
 - Keep the web service at one replica. The checked-in command initializes storage and migrations before `serve`.
 - Set `OPINIONS_START_URL=https://<web-domain>/internal/opinion-cycle/start` and the same random
