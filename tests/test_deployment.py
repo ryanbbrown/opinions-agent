@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import logging
+from contextlib import contextmanager
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,6 +12,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.exc import OperationalError
 
 import opinions_agent.app as app_module
+import opinions_agent.worker as worker_module
 from opinions_agent.cli import _cron_trigger
 from opinions_agent.config import Settings, get_settings, validate_cron_settings, validate_web_settings
 from opinions_agent.corpus import CorpusPaths, init_data_dirs
@@ -21,7 +23,7 @@ from opinions_agent.recovery import archive_and_restore_run, capture_run_baselin
 from opinions_agent.repo_checkout import ensure_opinions_repo
 from opinions_agent.telegram import FakeTelegramClient
 from opinions_agent.tools.git_ops import commit_and_push_opinions_files, run_git
-from opinions_agent.workflow import send_cycle_failure_notice
+from opinions_agent.workflow import abandon_run, send_cycle_failure_notice
 
 
 def railway_settings(settings: Settings, tmp_path: Path, *, environment: str) -> Settings:
@@ -95,6 +97,21 @@ def test_production_validation_requires_tracing_credentials(
 
     with pytest.raises(ValueError, match="production requires"):
         validate_web_settings(configured)
+
+
+@pytest.mark.parametrize("environment", ["staging", "prod"])
+def test_explicit_deployed_environment_validates_without_railway_markers(
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    environment: str,
+) -> None:
+    for name in ("RAILWAY_PROJECT_ID", "RAILWAY_ENVIRONMENT_ID", "RAILWAY_SERVICE_ID"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(app_module, "settings", replace(settings, environment=environment))
+
+    with pytest.raises(ValueError, match="missing Railway web settings"):
+        with TestClient(app_module.app):
+            pass
 
 
 def test_model_overrides_load_from_dotenv_after_file_is_read(
@@ -306,6 +323,37 @@ def test_start_endpoint_status_contract(
     assert response.status_code == expected
 
 
+def test_non_ascii_authorization_headers_return_unauthorized_without_logging_values(
+    session,
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    configured = replace(
+        settings,
+        opinions_start_secret="start-secret",
+        telegram_webhook_secret="webhook-secret",
+    )
+    monkeypatch.setattr(app_module, "settings", configured)
+    app_module.app.dependency_overrides[app_module.get_session] = lambda: session
+    client = TestClient(app_module.app)
+    malformed = "Bearer sécřet"
+    malformed_bytes = malformed.encode()
+    try:
+        start = client.post("/internal/opinion-cycle/start", headers={"Authorization": malformed_bytes})
+        webhook = client.post(
+            "/telegram/webhook",
+            headers={"X-Telegram-Bot-Api-Secret-Token": malformed_bytes},
+            json={"update_id": 1},
+        )
+    finally:
+        app_module.app.dependency_overrides.clear()
+
+    assert start.status_code == 401
+    assert webhook.status_code == 401
+    assert malformed not in caplog.text
+
+
 def test_health_requires_startup_database_and_volume(
     settings: Settings,
     tmp_path: Path,
@@ -314,6 +362,62 @@ def test_health_requires_startup_database_and_volume(
     monkeypatch.setattr(app_module, "startup_ready", False)
     with pytest.raises(app_module.HTTPException, match="startup reconciliation"):
         app_module.healthz()
+
+
+def test_lifespan_serves_unhealthy_until_reconciliation_recovers(
+    session,
+    settings: Settings,
+    opinions_repo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    configured = replace(settings, opinions_git_token="operator-secret")
+    run = OpinionRun(
+        status=RunStatus.FAILED.value,
+        window_start=datetime(2026, 6, 1, tzinfo=UTC),
+        window_end=datetime(2026, 6, 8, tzinfo=UTC),
+        git_phase=GitPhase.PUSHED.value,
+        baseline_complete=True,
+    )
+    session.add(run)
+    session.commit()
+
+    @contextmanager
+    def session_scope():
+        yield session
+
+    async def idle_worker(*args, **kwargs):
+        stop = args[4]
+        await stop.wait()
+
+    def fail_completion(*args, **kwargs):
+        raise RuntimeError("artifact validation failed with operator-secret")
+
+    def recover_completion(db_session, _settings, stored_run):
+        stored_run.status = RunStatus.COMPLETED.value
+        stored_run.git_phase = GitPhase.COMPLETED.value
+        stored_run.failure_reason = None
+        db_session.commit()
+
+    monkeypatch.setattr(worker_module, "complete_reconciled_run", fail_completion)
+    monkeypatch.setattr(app_module, "settings", configured)
+    monkeypatch.setattr(app_module, "engine", session.get_bind())
+    monkeypatch.setattr(app_module, "SessionLocal", session_scope)
+    monkeypatch.setattr(app_module, "worker_loop", idle_worker)
+
+    with caplog.at_level(logging.ERROR), TestClient(app_module.app) as client:
+        assert client.get("/openapi.json").status_code == 200
+        assert client.get("/healthz").status_code == 503
+        assert "artifact validation failed" in caplog.text
+        assert "operator-secret" not in caplog.text
+
+        monkeypatch.setattr(worker_module, "complete_reconciled_run", recover_completion)
+        run.reconcile_after = datetime.now(UTC) - timedelta(seconds=1)
+        session.commit()
+        result = worker_module.reconcile_startup(session, configured)
+        app_module._set_startup_ready(result.healthy)
+        assert client.get("/healthz").status_code == 200
 
     class BrokenEngine:
         def connect(self):
@@ -372,6 +476,43 @@ def test_failed_edits_archive_and_restore_only_writable_artifacts(
     assert run_git(opinions_repo, "diff", "--cached", "--name-only") == ""
 
 
+def test_incomplete_baseline_never_deletes_current_artifacts(
+    session,
+    settings: Settings,
+    opinions_repo: Path,
+) -> None:
+    cycle = OpinionCycle(
+        week_key="2026-W24",
+        status=CycleStatus.STOPPED.value,
+        window_start=datetime(2026, 6, 1, tzinfo=UTC),
+        window_end=datetime(2026, 6, 8, tzinfo=UTC),
+    )
+    session.add(cycle)
+    session.flush()
+    run = OpinionRun(
+        status=RunStatus.RUNNING_AGENT.value,
+        window_start=datetime(2026, 6, 1, tzinfo=UTC),
+        window_end=datetime(2026, 6, 8, tzinfo=UTC),
+        cycle_id=cycle.id,
+        baseline_complete=False,
+    )
+    session.add(run)
+    session.commit()
+    original = settings.opinions_target_path.read_bytes()
+    partial = settings.runs_dir / "active" / run.id / "recovery" / run.id / "baseline"
+    partial.mkdir(parents=True)
+    (partial / "opinions.md").write_text("partial copy", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="baseline is incomplete"):
+        archive_and_restore_run(settings, run, settings.runs_dir / "active" / run.id)
+    assert settings.opinions_target_path.read_bytes() == original
+
+    with pytest.raises(RuntimeError, match="baseline is incomplete"):
+        abandon_run(session, settings, run)
+    assert run.status == RunStatus.RUNNING_AGENT.value
+    assert settings.opinions_target_path.read_bytes() == original
+
+
 async def test_stopped_cycle_notification_is_generic_and_idempotent(
     session,
     settings: Settings,
@@ -400,7 +541,20 @@ async def test_stopped_cycle_notification_is_generic_and_idempotent(
     await send_cycle_failure_notice(session=session, settings=settings, telegram=telegram, run=run)
     await send_cycle_failure_notice(session=session, settings=settings, telegram=telegram, run=run)
 
-    assert len(telegram.sent) == 1
+    retry_run = OpinionRun(
+        status=RunStatus.FAILED.value,
+        cycle_id=cycle.id,
+        batch=2,
+        window_start=cycle.window_start,
+        window_end=cycle.window_end,
+        failure_reason="same failure on retry",
+    )
+    session.add(retry_run)
+    session.commit()
+    await send_cycle_failure_notice(session=session, settings=settings, telegram=telegram, run=retry_run)
+    await send_cycle_failure_notice(session=session, settings=settings, telegram=telegram, run=retry_run)
+
+    assert len(telegram.sent) == 2
     text = telegram.sent[0][1].text
     assert cycle.id in text and "batch 2" in text and "retry-cycle" in text
     assert "secret-token" not in text and "exception" not in text

@@ -10,6 +10,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
+import opinions_agent.worker as worker_module
 import opinions_agent.workflow as workflow_module
 from opinions_agent.agent import AgentTurnOutput, DeterministicOpinionAgent, OpinionAgent
 from opinions_agent.config import Settings
@@ -41,7 +42,7 @@ from opinions_agent.models import (
 )
 from opinions_agent.telegram import FakeTelegramClient
 from opinions_agent.worker import process_queued_once, reconcile_startup
-from opinions_agent.workflow import handle_telegram_update
+from opinions_agent.workflow import handle_telegram_update, send_snapshot_failure_notice
 
 
 def rows(sizes: list[int]) -> list[HighlightRow]:
@@ -79,6 +80,9 @@ def test_partition_splits_blocking_document_but_keeps_acceptable_boundaries() ->
     assert counts([45, 5]) == [25, 25]
     assert counts([5, 45]) == [25, 25]
     assert counts([23, 27]) == [23, 27]
+    assert sorted(counts([12, 39])) == [25, 26]
+    assert sorted(counts([39, 12])) == [25, 26]
+    assert counts([50]) == [25, 25]
 
 
 def test_partition_preserves_every_evidence_version_and_caps() -> None:
@@ -260,6 +264,87 @@ async def test_worker_continues_batches_after_telegram_completion(
     assert (settings.runs_dir / "completed" / result.cycle_id).is_dir()
 
 
+async def test_cycle_commit_reconciliation_resumes_next_batch_and_completes_final_batch(
+    session,
+    settings: Settings,
+    opinions_repo,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = settings.__class__(
+        **{**settings.__dict__, "initial_evidence_after": "2026-06-01T00:00:00+00:00"}
+    )
+    corpus = CorpusPaths(settings.opinions_data_dir)
+    init_data_dirs(corpus)
+    evidence = rows([50])
+    upsert_documents(corpus, [DocumentRow(document_id=evidence[0].document_id, reader_id="0", title="Doc")])
+    upsert_highlights(corpus, evidence)
+    result = await start_opinion_cycle(
+        session=session,
+        settings=settings,
+        sync_corpus=_no_sync,
+        now=datetime(2026, 6, 12, tzinfo=UTC),
+    )
+    telegram = FakeTelegramClient()
+    agent = DeterministicOpinionAgent()
+    assert await process_queued_once(session, settings, agent, telegram) is True
+    real_run_git = workflow_module.run_git
+
+    def fail_push(repo_dir, *args, **kwargs):
+        if args and args[0] == "push":
+            raise RuntimeError("push interrupted")
+        return real_run_git(repo_dir, *args, **kwargs)
+
+    monkeypatch.setattr(workflow_module, "run_git", fail_push)
+    with pytest.raises(RuntimeError, match="push interrupted"):
+        await handle_telegram_update(
+            session=session,
+            settings=settings,
+            agent=agent,
+            telegram=telegram,
+            update={"update_id": 41, "message": {"message_id": 41, "chat": {"id": 12345}, "text": "GO"}},
+        )
+    cycle = session.get(OpinionCycle, result.cycle_id)
+    assert cycle is not None and cycle.status == CycleStatus.STOPPED.value
+
+    monkeypatch.setattr(workflow_module, "run_git", real_run_git)
+    reconciliation = reconcile_startup(session, settings)
+    batches = list(
+        session.scalars(
+            select(OpinionBatch).where(OpinionBatch.cycle_id == cycle.id).order_by(OpinionBatch.batch_number)
+        )
+    )
+    assert reconciliation.healthy is True
+    assert cycle.status == CycleStatus.ACTIVE.value
+    assert cycle.failure_code is None
+    assert [batch.status for batch in batches] == [BatchStatus.COMPLETED.value, BatchStatus.QUEUED.value]
+    assert await process_queued_once(session, settings, agent, telegram) is True
+    assert batches[1].status == BatchStatus.AWAITING_USER.value
+
+    real_high_water = workflow_module.update_opinion_id_high_water
+    monkeypatch.setattr(
+        workflow_module,
+        "update_opinion_id_high_water",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("database completion interrupted")),
+    )
+    with pytest.raises(RuntimeError, match="database completion interrupted"):
+        await handle_telegram_update(
+            session=session,
+            settings=settings,
+            agent=agent,
+            telegram=telegram,
+            update={"update_id": 42, "message": {"message_id": 42, "chat": {"id": 12345}, "text": "SKIP"}},
+        )
+    assert cycle.status == CycleStatus.STOPPED.value
+
+    monkeypatch.setattr(workflow_module, "update_opinion_id_high_water", real_high_water)
+    assert reconcile_startup(session, settings).healthy is True
+    final_run = session.get(OpinionRun, batches[1].latest_run_id)
+    assert cycle.status == CycleStatus.COMPLETED.value
+    assert batches[1].status == BatchStatus.COMPLETED.value
+    assert final_run is not None and final_run.status == RunStatus.COMPLETED.value
+    assert final_run.failure_reason is None
+
+
 async def test_worker_claim_serializes_agent_turns_and_expired_run_is_swept(
     session,
     settings: Settings,
@@ -305,7 +390,7 @@ async def test_worker_claim_serializes_agent_turns_and_expired_run_is_swept(
 
     run = session.scalar(select(OpinionRun).where(OpinionRun.cycle_id == cycle_result.cycle_id))
     assert run is not None and run.status == RunStatus.RUNNING_AGENT.value
-    assert reconcile_startup(session, settings) == []
+    assert reconcile_startup(session, settings).stopped_runs == []
     run.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
     session.commit()
 
@@ -356,6 +441,51 @@ async def test_cycle_setup_failure_stops_once_without_retry(
     assert len(telegram.sent) == 1
 
 
+async def test_reclaimed_pending_run_finishes_baseline_before_agent_turn(
+    session,
+    settings: Settings,
+    opinions_repo,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = settings.__class__(
+        **{**settings.__dict__, "initial_evidence_after": "2026-06-01T00:00:00+00:00"}
+    )
+    corpus = CorpusPaths(settings.opinions_data_dir)
+    init_data_dirs(corpus)
+    evidence = rows([1])
+    upsert_documents(corpus, [DocumentRow(document_id=evidence[0].document_id, reader_id="0", title="Doc")])
+    upsert_highlights(corpus, evidence)
+    cycle_result = await start_opinion_cycle(
+        session=session,
+        settings=settings,
+        sync_corpus=_no_sync,
+        now=datetime(2026, 6, 12, tzinfo=UTC),
+    )
+    real_capture = workflow_module.capture_run_baseline
+
+    def crash_during_capture(*args, **kwargs):
+        raise KeyboardInterrupt("process stopped during baseline capture")
+
+    monkeypatch.setattr(workflow_module, "capture_run_baseline", crash_during_capture)
+    with pytest.raises(KeyboardInterrupt):
+        await process_queued_once(session, settings, DeterministicOpinionAgent(), FakeTelegramClient())
+    run = session.scalar(select(OpinionRun).where(OpinionRun.cycle_id == cycle_result.cycle_id))
+    assert run is not None and run.status == RunStatus.PENDING_AGENT.value
+    assert run.baseline_complete is False
+
+    class BaselineCheckingAgent(DeterministicOpinionAgent):
+        async def run_turn(self, *, run_id, context, **kwargs):
+            stored = session.get(OpinionRun, run_id)
+            assert stored is not None and stored.baseline_complete is True
+            marker = Path(context.selected_highlights_jsonl).parent / "recovery" / run_id / "baseline" / "manifest.json"
+            assert marker.is_file()
+            return await super().run_turn(run_id=run_id, context=context, **kwargs)
+
+    monkeypatch.setattr(workflow_module, "capture_run_baseline", real_capture)
+    assert await process_queued_once(session, settings, BaselineCheckingAgent(), FakeTelegramClient()) is True
+    assert run.status == RunStatus.AWAITING_USER.value
+
+
 async def test_dirty_cycle_checkout_stops_before_agent_turn_and_preserves_existing_edit(
     session,
     settings: Settings,
@@ -385,6 +515,56 @@ async def test_dirty_cycle_checkout_stops_before_agent_turn_and_preserves_existi
     assert session.get(OpinionCycle, result.cycle_id).status == CycleStatus.STOPPED.value
     assert settings.opinions_target_path.read_text(encoding="utf-8") == "dirty checkout\n"
     settings.opinions_target_path.write_text(original, encoding="utf-8")
+
+
+async def test_failed_git_reconciliation_backs_off_and_does_not_block_queued_work(
+    session,
+    settings: Settings,
+    opinions_repo,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = settings.__class__(
+        **{**settings.__dict__, "initial_evidence_after": "2026-06-01T00:00:00+00:00"}
+    )
+    corpus = CorpusPaths(settings.opinions_data_dir)
+    init_data_dirs(corpus)
+    evidence = rows([1])
+    upsert_documents(corpus, [DocumentRow(document_id=evidence[0].document_id, reader_id="0", title="Doc")])
+    upsert_highlights(corpus, evidence)
+    cycle_result = await start_opinion_cycle(
+        session=session,
+        settings=settings,
+        sync_corpus=_no_sync,
+        now=datetime(2026, 6, 12, tzinfo=UTC),
+    )
+    failed = OpinionRun(
+        status=RunStatus.FAILED.value,
+        window_start=datetime(2026, 5, 1, tzinfo=UTC),
+        window_end=datetime(2026, 5, 8, tzinfo=UTC),
+        git_phase="committed",
+        git_result_sha="deadbeef",
+    )
+    session.add(failed)
+    session.commit()
+    calls = 0
+
+    def fail_reconciliation(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("persistent fetch failure")
+
+    monkeypatch.setattr(worker_module, "reconcile_git_durability", fail_reconciliation)
+    telegram = FakeTelegramClient()
+    assert await process_queued_once(session, settings, DeterministicOpinionAgent(), telegram) is True
+    started = session.scalar(select(OpinionRun).where(OpinionRun.cycle_id == cycle_result.cycle_id))
+    assert started is not None and started.status == RunStatus.AWAITING_USER.value
+
+    for _ in range(3):
+        assert await process_queued_once(session, settings, DeterministicOpinionAgent(), telegram) is False
+
+    assert calls == 1
+    assert failed.reconcile_attempts == 1
+    assert failed.reconcile_after is not None
 
 
 async def test_cycle_reserves_before_sync_and_duplicate_does_not_sync(
@@ -472,6 +652,60 @@ async def test_failed_snapshot_keeps_reservation_and_can_retry(
     assert result.result_code == "retried"
     assert result.batch_count == 1
     assert session.get(OpinionCycle, cycle.id).status == CycleStatus.ACTIVE.value
+
+
+async def test_direct_snapshot_failure_sends_one_cycle_notice(
+    session,
+    settings: Settings,
+) -> None:
+    settings = settings.__class__(
+        **{**settings.__dict__, "initial_evidence_after": "2026-06-01T00:00:00+00:00"}
+    )
+    telegram = FakeTelegramClient()
+
+    async def notify(cycle: OpinionCycle) -> None:
+        await send_snapshot_failure_notice(session=session, settings=settings, telegram=telegram, cycle=cycle)
+
+    async def fail_sync() -> None:
+        raise RuntimeError("reader-secret internal failure")
+
+    with pytest.raises(RuntimeError, match="internal failure"):
+        await start_opinion_cycle(
+            session=session,
+            settings=settings,
+            sync_corpus=fail_sync,
+            notify_failure=notify,
+            now=datetime(2026, 6, 12, tzinfo=UTC),
+        )
+    cycle = session.scalar(select(OpinionCycle))
+    assert cycle is not None
+    await notify(cycle)
+
+    assert len(telegram.sent) == 1
+    assert cycle.id in telegram.sent[0][1].text
+    assert "reader-secret" not in telegram.sent[0][1].text
+
+
+async def test_startup_reconciled_snapshot_failure_sends_one_cycle_notice(
+    session,
+    settings: Settings,
+) -> None:
+    cycle = OpinionCycle(
+        week_key="2026-W24",
+        status=CycleStatus.STARTING.value,
+        window_start=datetime(2026, 6, 1, tzinfo=UTC),
+        window_end=datetime(2026, 6, 8, tzinfo=UTC),
+    )
+    session.add(cycle)
+    session.commit()
+    telegram = FakeTelegramClient()
+
+    assert await process_queued_once(session, settings, DeterministicOpinionAgent(), telegram) is False
+    assert await process_queued_once(session, settings, DeterministicOpinionAgent(), telegram) is False
+
+    assert cycle.status == CycleStatus.STOPPED.value
+    assert len(telegram.sent) == 1
+    assert cycle.id in telegram.sent[0][1].text
 
 
 async def test_no_evidence_cycle_completes_and_late_evidence_is_selected_next_week(

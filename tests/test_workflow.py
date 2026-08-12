@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import asyncio
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 from conftest import seed_corpus
 from sqlalchemy import select
+from sqlalchemy.orm import sessionmaker
 
 import opinions_agent.workflow as workflow_module
 from opinions_agent.agent import (
@@ -22,7 +24,7 @@ from opinions_agent.models import OpinionRun, RunStatus, TelegramInteraction
 from opinions_agent.selection import RunPaths
 from opinions_agent.telegram import FakeTelegramClient
 from opinions_agent.tools.git_ops import run_git
-from opinions_agent.worker import reconcile_startup
+from opinions_agent.worker import process_queued_once, reconcile_startup
 from opinions_agent.workflow import (
     ActiveRunError,
     handle_telegram_update,
@@ -112,6 +114,7 @@ async def test_start_run_writes_bundle_and_sends_agent_messages(
     assert run.turn_seq == 1
     run_dir = RunPaths(settings.runs_dir).active_run_dir(run.id)
     assert sorted(p.name for p in run_dir.iterdir()) == [
+        "recovery",
         "review",
         "selected-documents.jsonl",
         "selected-highlights.jsonl",
@@ -305,6 +308,65 @@ async def test_go_resumes_same_agent_conversation(session, settings: Settings, o
     assert "opinion-000003" in (opinions_repo / "OPINIONS.md").read_text(encoding="utf-8")
 
 
+async def test_live_resumed_turn_renews_lease_until_process_loss(
+    session,
+    settings: Settings,
+    opinions_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seed_corpus(settings)
+    original = settings.opinions_target_path.read_text(encoding="utf-8")
+
+    class BlockingResumeAgent(DeterministicOpinionAgent):
+        def __init__(self) -> None:
+            self.resumed = asyncio.Event()
+
+        async def run_turn(self, *, context, prompt_fragment, **kwargs):
+            if prompt_fragment is None:
+                return await super().run_turn(context=context, prompt_fragment=prompt_fragment, **kwargs)
+            context.opinions_md.write_text("live agent edit\n", encoding="utf-8")
+            self.resumed.set()
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr(workflow_module, "RUN_LEASE_DURATION", timedelta(milliseconds=60))
+    monkeypatch.setattr(workflow_module, "RUN_LEASE_HEARTBEAT_SECONDS", 0.01)
+    telegram = FakeTelegramClient()
+    agent = BlockingResumeAgent()
+    run = await start_run(session, settings, telegram, agent)
+    outbound = outbound_for_run(session, run)
+    resume = asyncio.create_task(
+        handle(session, settings, telegram, callback_update(777, outbound, "approve:add-deterministic-opinion"), agent)
+    )
+    await agent.resumed.wait()
+    await asyncio.sleep(0.15)
+
+    SessionLocal = sessionmaker(bind=session.get_bind(), expire_on_commit=False)
+    with SessionLocal() as worker_session:
+        assert await process_queued_once(
+            worker_session,
+            settings,
+            DeterministicOpinionAgent(),
+            FakeTelegramClient(),
+        ) is False
+        stored = worker_session.get(OpinionRun, run.id)
+        assert stored is not None and stored.status == RunStatus.RUNNING_AGENT.value
+    assert settings.opinions_target_path.read_text(encoding="utf-8") == "live agent edit\n"
+
+    resume.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await resume
+    session.expire_all()
+    run = session.get(OpinionRun, run.id)
+    assert run is not None
+    run.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    session.commit()
+    recovery = reconcile_startup(session, settings)
+
+    assert [stopped.id for stopped in recovery.stopped_runs] == [run.id]
+    assert run.status == RunStatus.FAILED.value
+    assert settings.opinions_target_path.read_text(encoding="utf-8") == original
+
+
 async def test_free_text_without_reply_does_not_resume(session, settings: Settings, opinions_repo: Path) -> None:
     seed_corpus(settings)
     telegram = FakeTelegramClient()
@@ -467,7 +529,7 @@ async def test_local_commit_failure_reconciles_without_another_agent_turn(
     assert run.git_phase == "committed"
 
     monkeypatch.setattr(workflow_module, "run_git", real_run_git)
-    assert reconcile_startup(session, settings) == []
+    assert reconcile_startup(session, settings).stopped_runs == []
 
     assert run.status == RunStatus.COMPLETED.value
     assert agent.calls == 1
@@ -497,7 +559,7 @@ async def test_pushed_commit_failure_reconciles_without_another_agent_turn(
     assert run.git_phase == "pushed"
 
     monkeypatch.setattr(workflow_module, "update_opinion_id_high_water", real_update)
-    assert reconcile_startup(session, settings) == []
+    assert reconcile_startup(session, settings).stopped_runs == []
 
     assert run.status == RunStatus.COMPLETED.value
     assert agent.calls == 1

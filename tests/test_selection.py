@@ -12,7 +12,7 @@ from opinions_agent.corpus import (
     upsert_documents,
     upsert_highlights,
 )
-from opinions_agent.fsio import read_json, read_jsonl
+from opinions_agent.fsio import read_json, read_jsonl, write_json_atomic
 from opinions_agent.selection import (
     RunPaths,
     cleanup_completed_runs,
@@ -209,11 +209,17 @@ def test_cleanup_completed_runs_respects_retention(tmp_path) -> None:
     fresh = run_paths.completed_run_dir("fresh")
     old.mkdir(parents=True)
     fresh.mkdir(parents=True)
+    write_json_atomic(old / "final.json", {"run_id": "old"})
+    write_json_atomic(fresh / "final.json", {"run_id": "fresh"})
+    cycle = run_paths.completed_run_dir("cycle-old")
+    (cycle / "batches" / "1" / "recovery").mkdir(parents=True)
     stale_time = datetime(2026, 5, 1, tzinfo=UTC).timestamp()
     os.utime(old, (stale_time, stale_time))
+    os.utime(cycle, (stale_time, stale_time))
 
     removed = cleanup_completed_runs(run_paths, retention_days=30, now=datetime(2026, 6, 12, tzinfo=UTC))
 
     assert removed == 1
     assert not old.exists()
     assert fresh.exists()
+    assert cycle.exists()
