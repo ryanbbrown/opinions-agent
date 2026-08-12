@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     DateTime,
     ForeignKey,
     Integer,
@@ -156,10 +157,13 @@ class OpinionRun(Base):
     failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     lease_owner: Mapped[str | None] = mapped_column(String(64), nullable=True)
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    baseline_complete: Mapped[bool] = mapped_column(Boolean, default=False)
     git_phase: Mapped[str | None] = mapped_column(String(32), nullable=True)
     git_base_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
     git_result_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
     decision_log_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    reconcile_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reconcile_attempts: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 

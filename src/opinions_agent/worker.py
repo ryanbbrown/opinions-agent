@@ -1,10 +1,13 @@
-"""Single-replica cycle worker and startup reconciliation."""
+"""Single-replica cycle worker and bounded startup reconciliation."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import UTC, datetime
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -14,54 +17,103 @@ from opinions_agent.agent import OpinionAgent
 from opinions_agent.config import Settings
 from opinions_agent.cycles import acquire_lease, reconcile_starting_cycles, release_lease
 from opinions_agent.diagnostics import log_operational_failure
-from opinions_agent.models import BatchStatus, CycleStatus, OpinionBatch, OpinionCycle, OpinionRun, RunStatus
+from opinions_agent.models import BatchStatus, CycleStatus, GitPhase, OpinionBatch, OpinionCycle, OpinionRun, RunStatus
 from opinions_agent.recovery import archive_and_restore_run, reconcile_git_durability
 from opinions_agent.workflow import (
     TelegramSender,
     complete_reconciled_run,
     run_pending_opinion_run,
     send_cycle_failure_notice,
+    send_snapshot_failure_notice,
     start_materialized_opinion_run,
 )
 
 LOGGER = logging.getLogger(__name__)
+RECONCILE_BACKOFF_BASE = timedelta(minutes=5)
+RECONCILE_BACKOFF_MAX = timedelta(hours=1)
 
 
-def reconcile_startup(session: Session, settings: Settings) -> list[OpinionRun]:
-    """Reconcile durable commit phases and stop unsafe interrupted model calls."""
+@dataclass(frozen=True)
+class ReconciliationResult:
+    stopped_runs: list[OpinionRun]
+    stopped_cycles: list[OpinionCycle]
+    healthy: bool
+
+
+def reconcile_startup(session: Session, settings: Settings) -> ReconciliationResult:
+    """Reconcile snapshots, commits, and expired model turns without leaking one failure."""
     now = datetime.now(UTC)
-    stopped: list[OpinionRun] = []
-    reconcile_starting_cycles(session, settings)
+    stopped_runs: list[OpinionRun] = []
+    stopped_cycles: list[OpinionCycle] = []
+    healthy = True
+    try:
+        stopped_cycles = reconcile_starting_cycles(session, settings)
+    except Exception as exc:
+        session.rollback()
+        log_operational_failure(LOGGER, settings, exc, phase="starting_cycle_reconciliation")
+        healthy = False
+
     candidates = list(
         session.scalars(
-            select(OpinionRun).where(
-                OpinionRun.status.in_([RunStatus.RUNNING_AGENT.value, RunStatus.FAILED.value])
-            )
+            select(OpinionRun).where(OpinionRun.status.in_([RunStatus.RUNNING_AGENT.value, RunStatus.FAILED.value]))
         )
     )
-    for run in candidates:
-        if reconcile_git_durability(settings, run):
-            complete_reconciled_run(session, settings, run)
+    for candidate in candidates:
+        run = session.get(OpinionRun, candidate.id)
+        if run is None:
             continue
-        if run.status == RunStatus.FAILED.value:
+        if run.reconcile_after is not None and _utc(run.reconcile_after) > now:
+            healthy = False
             continue
-        if run.lease_expires_at is None or _utc(run.lease_expires_at) > now:
-            continue
-        archive_and_restore_run(settings, run, _run_dir(run, settings))
-        run.status = RunStatus.FAILED.value
-        run.failure_reason = "interrupted_agent"
-        if run.cycle_id:
-            cycle = session.get(OpinionCycle, run.cycle_id)
-            if cycle is not None:
-                cycle.status = CycleStatus.STOPPED.value
-                cycle.failure_code = "interrupted_agent"
-                cycle.failure_summary = "The model call was interrupted. Retry the stored batch."
-            batch = _batch_for_run(session, run)
-            if batch is not None:
-                batch.status = BatchStatus.STOPPED.value
-        stopped.append(run)
-    session.commit()
-    return stopped
+        try:
+            needs_git_reconciliation = run.git_phase in {
+                GitPhase.COMMIT_INTENT.value,
+                GitPhase.COMMITTED.value,
+                GitPhase.PUSHED.value,
+            }
+            if needs_git_reconciliation and reconcile_git_durability(settings, run):
+                complete_reconciled_run(session, settings, run)
+                run.reconcile_after = None
+                run.reconcile_attempts = 0
+                session.commit()
+                continue
+            if run.status == RunStatus.FAILED.value:
+                continue
+            if run.lease_expires_at is None or _utc(run.lease_expires_at) > now:
+                continue
+            archive_and_restore_run(settings, run, _run_dir(run, settings))
+            run.status = RunStatus.FAILED.value
+            run.failure_reason = "interrupted_agent"
+            if run.cycle_id:
+                cycle = session.get(OpinionCycle, run.cycle_id)
+                if cycle is not None:
+                    cycle.status = CycleStatus.STOPPED.value
+                    cycle.failure_code = "interrupted_agent"
+                    cycle.failure_summary = "The model call was interrupted. Retry the stored batch."
+                batch = _batch_for_run(session, run)
+                if batch is not None:
+                    batch.status = BatchStatus.STOPPED.value
+            stopped_runs.append(run)
+            session.commit()
+        except Exception as exc:
+            session.rollback()
+            run = session.get(OpinionRun, candidate.id)
+            if run is not None:
+                run.reconcile_attempts += 1
+                multiplier = 2 ** min(run.reconcile_attempts - 1, 4)
+                run.reconcile_after = now + min(RECONCILE_BACKOFF_BASE * multiplier, RECONCILE_BACKOFF_MAX)
+                session.commit()
+                log_operational_failure(
+                    LOGGER,
+                    settings,
+                    exc,
+                    phase="run_reconciliation",
+                    cycle_id=run.cycle_id or "none",
+                    batch=run.batch,
+                    run_id=run.id,
+                )
+            healthy = False
+    return ReconciliationResult(stopped_runs, stopped_cycles, healthy)
 
 
 async def process_queued_once(
@@ -69,9 +121,36 @@ async def process_queued_once(
     settings: Settings,
     agent: OpinionAgent,
     telegram: TelegramSender,
+    *,
+    readiness: Callable[[bool], None] | None = None,
 ) -> bool:
-    for stopped_run in reconcile_startup(session, settings):
-        await send_cycle_failure_notice(session=session, settings=settings, telegram=telegram, run=stopped_run)
+    reconciliation = reconcile_startup(session, settings)
+    if readiness is not None:
+        readiness(reconciliation.healthy)
+    for cycle in reconciliation.stopped_cycles:
+        try:
+            await send_snapshot_failure_notice(session=session, settings=settings, telegram=telegram, cycle=cycle)
+        except Exception as exc:
+            log_operational_failure(
+                LOGGER,
+                settings,
+                exc,
+                phase="snapshot_failure_notice",
+                cycle_id=cycle.id,
+            )
+    for run in reconciliation.stopped_runs:
+        try:
+            await send_cycle_failure_notice(session=session, settings=settings, telegram=telegram, run=run)
+        except Exception as exc:
+            log_operational_failure(
+                LOGGER,
+                settings,
+                exc,
+                phase="run_failure_notice",
+                cycle_id=run.cycle_id or "none",
+                batch=run.batch,
+                run_id=run.id,
+            )
     owner = uuid4().hex
     now = datetime.now(UTC)
     if not acquire_lease(session, "opinion-worker-claim", owner_token=owner, now=now):
@@ -128,14 +207,23 @@ async def worker_loop(
     agent: OpinionAgent,
     telegram: TelegramSender,
     stop: asyncio.Event,
+    readiness: Callable[[bool], None] | None = None,
 ) -> None:
     while not stop.is_set():
         with SessionLocal() as session:
             try:
-                worked = await process_queued_once(session, settings, agent, telegram)
+                worked = await process_queued_once(
+                    session,
+                    settings,
+                    agent,
+                    telegram,
+                    readiness=readiness,
+                )
             except Exception as exc:
                 session.rollback()
                 log_operational_failure(LOGGER, settings, exc, phase="worker_iteration")
+                if readiness is not None:
+                    readiness(False)
                 worked = False
         if not worked:
             try:
@@ -155,9 +243,7 @@ def _batch_for_run(session: Session, run: OpinionRun) -> OpinionBatch | None:
     )
 
 
-def _run_dir(run: OpinionRun, settings: Settings):
-    from pathlib import Path
-
+def _run_dir(run: OpinionRun, settings: Settings) -> Path:
     return Path((run.input_paths or {}).get("dir") or settings.runs_dir / "active" / run.id)
 
 

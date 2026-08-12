@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import math
@@ -150,8 +151,8 @@ def _best_boundaries(
     total_rows: int,
 ) -> list[list[list[HighlightRow]]] | None:
     target = total_rows / batch_count
-    low = math.floor(target * 0.5)
-    high = math.ceil(target * 1.5)
+    low = math.ceil(target * 0.5)
+    high = math.floor(target * 1.5)
     @cache
     def search(
         start: int,
@@ -249,16 +250,21 @@ async def start_opinion_cycle(
     session: Session,
     settings: Settings,
     sync_corpus: Callable[[], Awaitable[object]],
+    notify_failure: Callable[[OpinionCycle], Awaitable[None]] | None = None,
     now: datetime | None = None,
 ) -> CycleStartResult:
     """Reserve a weekly cycle before sync, then freeze and assign its corpus snapshot."""
     current = (now or datetime.now(UTC)).astimezone(UTC)
     owner = uuid4().hex
     if not acquire_lease(session, "opinion-cycle-start", owner_token=owner, now=current):
-        existing = _unfinished_cycle(session)
-        if existing is None:
-            raise RuntimeError("another cycle start owns the start lease")
-        return _existing_result(existing)
+        for _ in range(50):
+            session.expire_all()
+            existing = session.scalar(select(OpinionCycle).where(OpinionCycle.week_key == week_key(current)))
+            existing = existing or _unfinished_cycle(session)
+            if existing is not None:
+                return _existing_result(existing)
+            await asyncio.sleep(0.02)
+        raise RuntimeError("another cycle start has not finished its reservation")
     cycle: OpinionCycle | None = None
     try:
         existing_week = session.scalar(select(OpinionCycle).where(OpinionCycle.week_key == week_key(current)))
@@ -310,6 +316,8 @@ async def start_opinion_cycle(
             stored_cycle.failure_code = "snapshot_failed"
             stored_cycle.failure_summary = "The weekly evidence snapshot failed. Retry the stopped cycle."
             session.commit()
+            if notify_failure is not None:
+                await notify_failure(stored_cycle)
         raise
     finally:
         release_lease(session, "opinion-cycle-start", owner)
@@ -574,6 +582,7 @@ async def retry_stopped_snapshot(
     settings: Settings,
     cycle_id: str,
     sync_corpus: Callable[[], Awaitable[object]],
+    notify_failure: Callable[[OpinionCycle], Awaitable[None]] | None = None,
 ) -> CycleStartResult:
     """Rebuild a reserved cycle whose sync or bundle creation stopped before batch one."""
     cycle = session.get(OpinionCycle, cycle_id)
@@ -615,6 +624,8 @@ async def retry_stopped_snapshot(
             cycle.failure_code = "snapshot_failed"
             cycle.failure_summary = "The weekly evidence snapshot failed. Retry the stopped cycle."
             session.commit()
+            if notify_failure is not None:
+                await notify_failure(cycle)
         raise
     finally:
         release_lease(session, "opinion-cycle-start", owner)

@@ -33,6 +33,7 @@ from opinions_agent.workflow import (
     abandon_run,
     handle_telegram_update,
     next_update_offset,
+    send_snapshot_failure_notice,
     start_opinion_run,
 )
 
@@ -118,7 +119,7 @@ async def _run(args: argparse.Namespace) -> None:
     if args.command == "init-runtime":
         from opinions_agent.config import is_railway_runtime, validate_web_settings
 
-        if is_railway_runtime():
+        if settings.environment in {"staging", "prod"} or is_railway_runtime():
             validate_web_settings(settings)
         init_data_dirs(corpus)
         RunPaths(settings.runs_dir).active_dir.mkdir(parents=True, exist_ok=True)
@@ -143,10 +144,21 @@ async def _run(args: argparse.Namespace) -> None:
         return
     if args.command == "opinion-cycle":
         with SessionLocal() as session:
+            telegram = TelegramClient(settings.telegram_bot_token)
+
+            async def notify_failure(cycle) -> None:
+                await send_snapshot_failure_notice(
+                    session=session,
+                    settings=settings,
+                    telegram=telegram,
+                    cycle=cycle,
+                )
+
             result = await start_opinion_cycle(
                 session=session,
                 settings=settings,
                 sync_corpus=lambda: sync_reader(ReaderClient(settings.readwise_token), corpus),
+                notify_failure=notify_failure,
             )
         print(
             f"cycle {result.cycle_id}: {result.status}, {result.batch_count} batches, {result.result_code}"
@@ -157,11 +169,22 @@ async def _run(args: argparse.Namespace) -> None:
             reconcile_startup(session, settings)
             cycle = session.get(OpinionCycle, args.cycle_id)
             if cycle is not None and cycle.failure_code == "snapshot_failed":
+                telegram = TelegramClient(settings.telegram_bot_token)
+
+                async def notify_failure(cycle) -> None:
+                    await send_snapshot_failure_notice(
+                        session=session,
+                        settings=settings,
+                        telegram=telegram,
+                        cycle=cycle,
+                    )
+
                 result = await retry_stopped_snapshot(
                     session=session,
                     settings=settings,
                     cycle_id=args.cycle_id,
                     sync_corpus=lambda: sync_reader(ReaderClient(settings.readwise_token), corpus),
+                    notify_failure=notify_failure,
                 )
                 print(f"cycle {result.cycle_id}: {result.status}, {result.batch_count} batches, {result.result_code}")
             else:

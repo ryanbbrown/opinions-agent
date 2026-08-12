@@ -15,7 +15,7 @@ from opinions_agent.corpus import (
     read_documents,
     read_highlights,
 )
-from opinions_agent.fsio import write_jsonl_atomic, write_text_atomic
+from opinions_agent.fsio import read_json, write_jsonl_atomic, write_text_atomic
 from opinions_agent.reader import iso_utc, iso_week, parse_iso, reader_summary_key
 
 
@@ -216,6 +216,9 @@ def cleanup_completed_runs(run_paths: RunPaths, *, retention_days: int, now: dat
     removed = 0
     for run_dir in run_paths.completed_dir.iterdir():
         if not run_dir.is_dir():
+            continue
+        final = read_json(run_dir / "final.json")
+        if not isinstance(final, dict) or final.get("run_id") != run_dir.name:
             continue
         modified = datetime.fromtimestamp(run_dir.stat().st_mtime, tz=UTC)
         if modified < cutoff:

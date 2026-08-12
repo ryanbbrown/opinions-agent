@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 from uuid import uuid4
 
-from sqlalchemy import func, select, update
+from sqlalchemy import Connection, Engine, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -30,7 +32,7 @@ from opinions_agent.models import (
 )
 from opinions_agent.opinions_doc import load_opinions, parse_opinions, read_sources
 from opinions_agent.reader import iso_utc
-from opinions_agent.recovery import archive_and_restore_run, capture_run_baseline, file_hash
+from opinions_agent.recovery import archive_and_restore_run, capture_run_baseline, file_hash, require_complete_baseline
 from opinions_agent.repo_checkout import ensure_opinions_repo, ensure_repo_file
 from opinions_agent.selection import RunPaths, finalize_run_dir, select_run_highlights, write_run_bundle
 from opinions_agent.tools.git_ops import (
@@ -42,6 +44,8 @@ from opinions_agent.tools.git_ops import (
 from opinions_agent.validation import run_artifact_validation, update_opinion_id_high_water
 
 DEFAULT_WINDOW = timedelta(days=7)
+RUN_LEASE_DURATION = timedelta(minutes=15)
+RUN_LEASE_HEARTBEAT_SECONDS = 30.0
 LOGGER = logging.getLogger(__name__)
 
 
@@ -81,7 +85,7 @@ VALID_TRANSITIONS = {
     RunStatus.AWAITING_USER.value: {RunStatus.RUNNING_AGENT.value, RunStatus.FAILED.value, RunStatus.ABANDONED.value},
     RunStatus.COMPLETED.value: set(),
     RunStatus.BLOCKED.value: set(),
-    RunStatus.FAILED.value: set(),
+    RunStatus.FAILED.value: {RunStatus.COMPLETED.value},
     RunStatus.ABANDONED.value: set(),
 }
 
@@ -163,6 +167,7 @@ async def start_opinion_run(
         "selected_highlights_jsonl": str(bundle.selected_highlights_jsonl),
         "selected_documents_jsonl": str(bundle.selected_documents_jsonl),
     }
+    capture_run_baseline(settings, run, bundle.run_dir)
     session.commit()
 
     try:
@@ -251,6 +256,7 @@ async def run_pending_opinion_run(
     if run.status != RunStatus.PENDING_AGENT.value:
         raise ValueError(f"run {run.id} is not pending")
     try:
+        _prepare_pending_run(session, settings, run)
         await _run_agent_turn(
             session=session,
             settings=settings,
@@ -283,7 +289,8 @@ def complete_reconciled_run(session: Session, settings: Settings, run: OpinionRu
             commit_sha=run.git_result_sha,
             validation_summary=validation.summary,
         )
-    run.status = RunStatus.COMPLETED.value
+    transition(run, RunStatus.COMPLETED)
+    run.failure_reason = None
     run.git_phase = GitPhase.COMPLETED.value
     run.lease_owner = None
     run.lease_expires_at = None
@@ -299,11 +306,38 @@ async def _run_agent_turn(
     run: OpinionRun,
     prompt_fragment: str | None,
 ) -> None:
+    require_complete_baseline(run, _run_dir(run, settings))
     if run.status == RunStatus.PENDING_AGENT.value:
         transition(run, RunStatus.RUNNING_AGENT)
         run.lease_owner = uuid4().hex
-        run.lease_expires_at = utcnow() + timedelta(minutes=15)
+        run.lease_expires_at = utcnow() + RUN_LEASE_DURATION
         session.commit()
+    lease_owner = run.lease_owner
+    heartbeat = asyncio.create_task(_heartbeat_run_lease(session.get_bind(), run.id, lease_owner))
+    try:
+        await _execute_claimed_turn(
+            session=session,
+            settings=settings,
+            agent=agent,
+            telegram=telegram,
+            run=run,
+            prompt_fragment=prompt_fragment,
+        )
+    finally:
+        heartbeat.cancel()
+        with suppress(asyncio.CancelledError):
+            await heartbeat
+
+
+async def _execute_claimed_turn(
+    *,
+    session: Session,
+    settings: Settings,
+    agent: OpinionAgent,
+    telegram: TelegramSender,
+    run: OpinionRun,
+    prompt_fragment: str | None,
+) -> None:
     context = build_read_context(settings, _run_dir(run, settings))
     output, resume_state = await agent.run_turn(
         run_id=run.id,
@@ -340,6 +374,36 @@ async def _run_agent_turn(
         await _complete_done_run(session=session, settings=settings, telegram=telegram, run=run, output=output)
         return
     raise ValueError(f"unsupported agent status: {output.status}")
+
+
+def _prepare_pending_run(session: Session, settings: Settings, run: OpinionRun) -> None:
+    if run.baseline_complete:
+        require_complete_baseline(run, _run_dir(run, settings))
+        return
+    ensure_opinions_repo(settings)
+    ensure_repo_file(settings, settings.opinions_target_file)
+    ensure_repo_file(settings, settings.opinions_sources_file)
+    capture_run_baseline(settings, run, _run_dir(run, settings))
+    session.commit()
+
+
+async def _heartbeat_run_lease(bind: Engine | Connection, run_id: str, owner: str | None) -> None:
+    if owner is None:
+        return
+    while True:
+        await asyncio.sleep(RUN_LEASE_HEARTBEAT_SECONDS)
+        now = utcnow()
+        with Session(bind=bind) as heartbeat_session:
+            heartbeat_session.execute(
+                update(OpinionRun)
+                .where(
+                    OpinionRun.id == run_id,
+                    OpinionRun.status == RunStatus.RUNNING_AGENT.value,
+                    OpinionRun.lease_owner == owner,
+                )
+                .values(lease_expires_at=now + RUN_LEASE_DURATION, updated_at=now)
+            )
+            heartbeat_session.commit()
 
 
 async def _complete_done_run(
@@ -517,12 +581,35 @@ async def send_cycle_failure_notice(
         session=session,
         settings=settings,
         telegram=telegram,
-        key=f"opinion-cycle:{run.cycle_id}:batch:{run.batch}:stopped:{code}",
+        key=f"opinion-cycle:{run.cycle_id}:batch:{run.batch}:run:{run.id}:stopped:{code}",
         run_id=run.id,
         spec=TelegramMessageSpec(
             text=(
                 f"Opinion cycle {run.cycle_id} stopped at batch {run.batch}. "
                 f"Failure code: {code}. Retry with: opinions-agent retry-cycle {run.cycle_id}"
+            )
+        ),
+    )
+
+
+async def send_snapshot_failure_notice(
+    *,
+    session: Session,
+    settings: Settings,
+    telegram: TelegramSender,
+    cycle: OpinionCycle,
+) -> None:
+    code = cycle.failure_code or "snapshot_failed"
+    await _send_idempotent(
+        session=session,
+        settings=settings,
+        telegram=telegram,
+        key=f"opinion-cycle:{cycle.id}:snapshot:stopped:{code}",
+        run_id=None,
+        spec=TelegramMessageSpec(
+            text=(
+                f"Opinion cycle {cycle.id} stopped before batch creation. "
+                f"Failure code: {code}. Retry with: opinions-agent retry-cycle {cycle.id}"
             )
         ),
     )
@@ -551,7 +638,7 @@ async def _send_idempotent(
     settings: Settings,
     telegram: TelegramSender,
     key: str,
-    run_id: str,
+    run_id: str | None,
     spec: TelegramMessageSpec,
 ) -> None:
     if settings.telegram_allowed_chat_id is None:
@@ -780,7 +867,7 @@ def _claim_awaiting_run(session: Session, run: OpinionRun) -> bool:
         .values(
             status=RunStatus.RUNNING_AGENT.value,
             lease_owner=uuid4().hex,
-            lease_expires_at=now + timedelta(minutes=15),
+            lease_expires_at=now + RUN_LEASE_DURATION,
             updated_at=now,
         )
     )
@@ -985,9 +1072,12 @@ def _fail_run(session: Session, run: OpinionRun, reason: str, *, settings: Setti
     if (
         settings is not None
         and run.git_phase not in {GitPhase.COMMITTED.value, GitPhase.PUSHED.value, GitPhase.COMPLETED.value}
-        and (_run_dir(run, settings) / "recovery" / run.id / "baseline").is_dir()
+        and run.baseline_complete
     ):
-        archive_and_restore_run(settings, run, _run_dir(run, settings))
+        try:
+            archive_and_restore_run(settings, run, _run_dir(run, settings))
+        except Exception as exc:
+            _log_operational_failure(settings, run, exc, "restore_failed_run")
     if run.status in NON_TERMINAL_RUN_STATUSES:
         run.status = RunStatus.FAILED.value
     run.failure_reason = "run_failed" if run.cycle_id else reason
@@ -1062,6 +1152,9 @@ def _complete_cycle_batch(
     if next_batch is not None:
         next_batch.status = BatchStatus.QUEUED.value
         cycle.current_batch = next_batch.batch_number
+        cycle.status = CycleStatus.ACTIVE.value
+        cycle.failure_code = None
+        cycle.failure_summary = None
         session.commit()
         return
     cycle.status = CycleStatus.COMPLETED.value
@@ -1078,13 +1171,14 @@ def _complete_cycle_batch(
 def abandon_run(session: Session, settings: Settings, run: OpinionRun) -> None:
     if run.cycle_id and run.git_phase in {GitPhase.COMMITTED.value, GitPhase.PUSHED.value}:
         raise ValueError("reconcile the recorded commit before abandoning this run")
-    transition(run, RunStatus.ABANDONED)
     if run.cycle_id:
         archive_and_restore_run(settings, run, _run_dir(run, settings))
+        transition(run, RunStatus.ABANDONED)
         _stop_cycle(session, run, "run_abandoned", "The interrupted run was abandoned. Retry the stored batch.")
         run.failure_reason = "run_abandoned"
         session.commit()
         return
+    transition(run, RunStatus.ABANDONED)
     _finalize_run_artifacts(settings, run)
     session.commit()
 

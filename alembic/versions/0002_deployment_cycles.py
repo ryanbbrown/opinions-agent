@@ -79,10 +79,16 @@ def upgrade() -> None:
     op.add_column("opinion_runs", sa.Column("cycle_id", sa.String(36)))
     op.add_column("opinion_runs", sa.Column("lease_owner", sa.String(64)))
     op.add_column("opinion_runs", sa.Column("lease_expires_at", sa.DateTime(timezone=True)))
+    op.add_column(
+        "opinion_runs",
+        sa.Column("baseline_complete", sa.Boolean(), nullable=False, server_default=sa.false()),
+    )
     op.add_column("opinion_runs", sa.Column("git_phase", sa.String(32)))
     op.add_column("opinion_runs", sa.Column("git_base_sha", sa.String(64)))
     op.add_column("opinion_runs", sa.Column("git_result_sha", sa.String(64)))
     op.add_column("opinion_runs", sa.Column("decision_log_hash", sa.String(64)))
+    op.add_column("opinion_runs", sa.Column("reconcile_after", sa.DateTime(timezone=True)))
+    op.add_column("opinion_runs", sa.Column("reconcile_attempts", sa.Integer(), nullable=False, server_default="0"))
     op.create_foreign_key("fk_opinion_runs_cycle", "opinion_runs", "opinion_cycles", ["cycle_id"], ["id"])
     op.create_index("ix_opinion_runs_cycle_id", "opinion_runs", ["cycle_id"])
     proposal_unique = next(
@@ -116,11 +122,14 @@ def downgrade() -> None:
     op.drop_constraint("fk_opinion_runs_cycle", "opinion_runs", type_="foreignkey")
     for column in (
         "decision_log_hash",
+        "reconcile_attempts",
+        "reconcile_after",
         "git_result_sha",
         "git_base_sha",
         "git_phase",
         "lease_expires_at",
         "lease_owner",
+        "baseline_complete",
         "cycle_id",
         "batch_count",
     ):
