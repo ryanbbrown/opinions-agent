@@ -1,6 +1,6 @@
 # Deployment readiness
 
-**Status: reviewed in panel v1. Implementation has not started.**
+**Status: implemented locally. Railway staging and production deployment remain.**
 
 ## Goal
 
