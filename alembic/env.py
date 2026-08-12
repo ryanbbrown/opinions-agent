@@ -6,6 +6,7 @@ from sqlalchemy import engine_from_config, pool
 
 from alembic import context
 from opinions_agent.config import get_settings
+from opinions_agent.db import normalize_database_url
 from opinions_agent.models import Base
 
 config = context.config
@@ -16,7 +17,7 @@ target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:
-    url = get_settings().database_url
+    url = normalize_database_url(get_settings().database_url)
     context.configure(
         url=url,
         target_metadata=target_metadata,
@@ -29,7 +30,7 @@ def run_migrations_offline() -> None:
 
 def run_migrations_online() -> None:
     section = config.get_section(config.config_ini_section) or {}
-    section["sqlalchemy.url"] = get_settings().database_url
+    section["sqlalchemy.url"] = normalize_database_url(get_settings().database_url)
     connectable = engine_from_config(section, prefix="sqlalchemy.", poolclass=pool.NullPool)
     with connectable.connect() as connection:
         context.configure(connection=connection, target_metadata=target_metadata)
