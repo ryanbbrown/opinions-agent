@@ -28,7 +28,7 @@ from opinions_agent.models import (
 )
 from opinions_agent.opinions_doc import load_opinions, parse_opinions, read_sources
 from opinions_agent.reader import iso_utc
-from opinions_agent.recovery import capture_run_baseline, file_hash
+from opinions_agent.recovery import archive_and_restore_run, capture_run_baseline, file_hash
 from opinions_agent.repo_checkout import ensure_opinions_repo, ensure_repo_file
 from opinions_agent.selection import RunPaths, finalize_run_dir, select_run_highlights, write_run_bundle
 from opinions_agent.tools.git_ops import (
@@ -1038,7 +1038,15 @@ def _complete_cycle_batch(
 
 
 def abandon_run(session: Session, settings: Settings, run: OpinionRun) -> None:
+    if run.cycle_id and run.git_phase in {GitPhase.COMMITTED.value, GitPhase.PUSHED.value}:
+        raise ValueError("reconcile the recorded commit before abandoning this run")
     transition(run, RunStatus.ABANDONED)
+    if run.cycle_id:
+        archive_and_restore_run(settings, run, _run_dir(run, settings))
+        _stop_cycle(session, run, "run_abandoned", "The interrupted run was abandoned. Retry the stored batch.")
+        run.failure_reason = "run_abandoned"
+        session.commit()
+        return
     _finalize_run_artifacts(settings, run)
     session.commit()
 
