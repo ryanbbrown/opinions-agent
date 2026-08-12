@@ -10,7 +10,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from opinions_agent.agent import ThinHarnessOpinionAgent
-from opinions_agent.config import get_settings, validate_web_settings
+from opinions_agent.config import get_settings, is_railway_runtime, validate_web_settings
 from opinions_agent.corpus import CorpusPaths, init_data_dirs
 from opinions_agent.cycles import start_opinion_cycle as create_opinion_cycle
 from opinions_agent.db import make_engine, make_sessionmaker
@@ -29,7 +29,7 @@ startup_ready = False
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     global startup_ready
-    if settings.volume_mount_path is not None:
+    if is_railway_runtime():
         validate_web_settings(settings)
     init_data_dirs(CorpusPaths(settings.opinions_data_dir))
     RunPaths(settings.runs_dir).active_dir.mkdir(parents=True, exist_ok=True)
@@ -92,7 +92,7 @@ async def start_opinion_cycle(
     result = await create_opinion_cycle(session=session, settings=settings, sync_corpus=sync_corpus)
     if result.result_code == "stopped":
         response.status_code = 409
-    elif result.created:
+    elif result.created and result.result_code != "no_evidence":
         response.status_code = 202
     return {
         "cycle_id": result.cycle_id,

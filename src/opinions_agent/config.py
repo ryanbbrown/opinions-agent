@@ -4,6 +4,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from sqlalchemy.engine import make_url
+
 OPINION_AGENT_MODEL = "openai:gpt-5.6-sol"
 OPINION_AGENT_REASONING_EFFORT = "medium"
 
@@ -90,7 +92,7 @@ def get_settings() -> Settings:
         harness_model=_env("OPINION_AGENT_MODEL", OPINION_AGENT_MODEL),
         braintrust_api_key=_env("BRAINTRUST_API_KEY"),
         braintrust_project_id=_env("BRAINTRUST_PROJECT_ID"),
-        environment=_env("OPINIONS_ENVIRONMENT") or ("prod" if _env("RAILWAY_VOLUME_MOUNT_PATH") else "dev"),
+        environment=_env("OPINIONS_ENVIRONMENT", "dev"),
         opinions_repo_url=_env("OPINIONS_REPO_URL", "https://github.com/ryanbbrown/ryanbbrown.git"),
         opinions_repo_branch=_env("OPINIONS_REPO_BRANCH", "main"),
         opinions_repo_dir=_default_path("OPINIONS_REPO_DIR", "/Users/ryanbrown/code/ryanbbrown", "opinions-repo"),
@@ -136,6 +138,12 @@ def validate_web_settings(settings: Settings) -> None:
     missing = sorted(name for name, value in required.items() if not value)
     if missing:
         raise ValueError("missing Railway web settings: " + ", ".join(missing))
+    try:
+        database = make_url(settings.database_url)
+    except Exception as exc:
+        raise ValueError("DATABASE_URL must be a valid PostgreSQL URL") from exc
+    if database.get_backend_name() != "postgresql":
+        raise ValueError("DATABASE_URL must use PostgreSQL")
     if "@" in settings.opinions_repo_url.partition("://")[2].partition("/")[0]:
         raise ValueError("OPINIONS_REPO_URL must not contain credentials")
     if settings.use_fake_telegram or settings.local_tracing_enabled:
@@ -152,3 +160,7 @@ def validate_web_settings(settings: Settings) -> None:
 def validate_cron_settings(settings: Settings) -> None:
     if not settings.opinions_start_url or not settings.opinions_start_secret:
         raise ValueError("OPINIONS_START_URL and OPINIONS_START_SECRET are required")
+
+
+def is_railway_runtime() -> bool:
+    return any(_env(name) for name in ("RAILWAY_PROJECT_ID", "RAILWAY_ENVIRONMENT_ID", "RAILWAY_SERVICE_ID"))

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
@@ -13,6 +14,7 @@ from sqlalchemy.orm import Session
 from opinions_agent.agent import AgentTurnOutput, OpinionAgent, TelegramMessageSpec, build_read_context
 from opinions_agent.config import Settings
 from opinions_agent.corpus import CorpusPaths, init_data_dirs
+from opinions_agent.diagnostics import log_operational_failure
 from opinions_agent.fsio import write_text_atomic
 from opinions_agent.models import (
     NON_TERMINAL_RUN_STATUSES,
@@ -40,6 +42,19 @@ from opinions_agent.tools.git_ops import (
 from opinions_agent.validation import run_artifact_validation, update_opinion_id_high_water
 
 DEFAULT_WINDOW = timedelta(days=7)
+LOGGER = logging.getLogger(__name__)
+
+
+def _log_operational_failure(settings: Settings, run: OpinionRun, exc: Exception, phase: str) -> None:
+    log_operational_failure(
+        LOGGER,
+        settings,
+        exc,
+        phase=phase,
+        cycle_id=run.cycle_id or "none",
+        batch=run.batch,
+        run_id=run.id,
+    )
 
 
 class TelegramSender(Protocol):
@@ -161,6 +176,7 @@ async def start_opinion_run(
         )
         return run
     except Exception as exc:
+        _log_operational_failure(settings, run, exc, "initial_turn")
         _fail_run(session, run, str(exc))
         await send_cycle_failure_notice(session=session, settings=settings, telegram=telegram, run=run)
         raise
@@ -181,9 +197,6 @@ async def start_materialized_opinion_run(
     cycle = session.get(OpinionCycle, batch.cycle_id)
     if cycle is None:
         raise ValueError(f"cycle not found: {batch.cycle_id}")
-    ensure_opinions_repo(settings)
-    ensure_repo_file(settings, settings.opinions_target_file)
-    ensure_repo_file(settings, settings.opinions_sources_file)
     run = OpinionRun(
         status=RunStatus.PENDING_AGENT.value,
         window_start=cycle.window_start,
@@ -202,11 +215,15 @@ async def start_materialized_opinion_run(
     )
     session.add(run)
     session.flush()
-    capture_run_baseline(settings, run, Path(batch.bundle_path))
     batch.latest_run_id = run.id
     batch.status = BatchStatus.RUNNING.value
     session.commit()
     try:
+        ensure_opinions_repo(settings)
+        ensure_repo_file(settings, settings.opinions_target_file)
+        ensure_repo_file(settings, settings.opinions_sources_file)
+        capture_run_baseline(settings, run, Path(batch.bundle_path))
+        session.commit()
         await _run_agent_turn(
             session=session,
             settings=settings,
@@ -217,7 +234,8 @@ async def start_materialized_opinion_run(
         )
         return run
     except Exception as exc:
-        _fail_run(session, run, str(exc))
+        _log_operational_failure(settings, run, exc, "cycle_setup_or_turn")
+        _fail_run(session, run, str(exc), settings=settings)
         await send_cycle_failure_notice(session=session, settings=settings, telegram=telegram, run=run)
         raise
 
@@ -242,7 +260,8 @@ async def run_pending_opinion_run(
             prompt_fragment=None,
         )
     except Exception as exc:
-        _fail_run(session, run, str(exc))
+        _log_operational_failure(settings, run, exc, "pending_turn")
+        _fail_run(session, run, str(exc), settings=settings)
         await send_cycle_failure_notice(session=session, settings=settings, telegram=telegram, run=run)
         raise
 
@@ -254,7 +273,16 @@ def complete_reconciled_run(session: Session, settings: Settings, run: OpinionRu
     validation = run_artifact_validation(settings=settings, run_dir=_run_dir(run, settings))
     update_opinion_id_high_water(settings, validation.high_water_mark)
     run.decision_log_hash = file_hash(CorpusPaths(settings.opinions_data_dir).decisions_jsonl)
-    _complete_cycle_batch(session, settings, run, run.git_result_sha, validation.summary)
+    if run.cycle_id:
+        _complete_cycle_batch(session, settings, run, run.git_result_sha, validation.summary)
+    else:
+        _finalize_run_artifacts(
+            settings,
+            run,
+            status=RunStatus.COMPLETED.value,
+            commit_sha=run.git_result_sha,
+            validation_summary=validation.summary,
+        )
     run.status = RunStatus.COMPLETED.value
     run.git_phase = GitPhase.COMPLETED.value
     run.lease_owner = None
@@ -352,6 +380,17 @@ async def _complete_done_run(
         run.git_phase = GitPhase.PUSHED.value
         session.commit()
         commit_boundary_finished = True
+        durability = f"commit {commit.commit_sha}" if commit.commit_sha else "no opinion file changes"
+        final_messages = output.telegram_messages or [TelegramMessageSpec(text=fallback_summary)]
+        final_output = AgentTurnOutput(
+            status="done",
+            telegram_messages=[
+                message.model_copy(update={"text": f"{message.text}\n\nDurability: {durability}"})
+                for message in final_messages
+            ],
+            notes=output.notes,
+        )
+        run.agent_output = final_output.model_dump(mode="json")
         update_opinion_id_high_water(settings, validation.high_water_mark)
         run.decision_log_hash = file_hash(CorpusPaths(settings.opinions_data_dir).decisions_jsonl)
         if run.cycle_id:
@@ -369,21 +408,9 @@ async def _complete_done_run(
         run.lease_expires_at = None
         run.git_phase = GitPhase.COMPLETED.value
         session.commit()
-        durability = f"commit {commit.commit_sha}" if commit.commit_sha else "no opinion file changes"
-        final_messages = output.telegram_messages or [TelegramMessageSpec(text=fallback_summary)]
-        final_output = AgentTurnOutput(
-            status="done",
-            telegram_messages=[
-                message.model_copy(update={"text": f"{message.text}\n\nDurability: {durability}"})
-                for message in final_messages
-            ],
-            notes=output.notes,
-        )
-        run.agent_output = final_output.model_dump(mode="json")
-        session.commit()
-        await send_agent_messages(session=session, settings=settings, telegram=telegram, run=run, output=final_output)
     except Exception as exc:
-        _fail_run(session, run, str(exc))
+        _log_operational_failure(settings, run, exc, "commit")
+        _fail_run(session, run, str(exc), settings=settings)
         if run.cycle_id:
             await send_cycle_failure_notice(session=session, settings=settings, telegram=telegram, run=run)
         else:
@@ -399,6 +426,10 @@ async def _complete_done_run(
                 ),
             )
         raise
+    try:
+        await send_agent_messages(session=session, settings=settings, telegram=telegram, run=run, output=final_output)
+    except Exception as exc:
+        _log_operational_failure(settings, run, exc, "final_telegram")
 
 
 def _completion_summary(settings: Settings) -> str:
@@ -735,7 +766,8 @@ async def _resume_from_telegram(
         )
         return result
     except Exception as exc:
-        _fail_run(session, run, str(exc))
+        _log_operational_failure(settings, run, exc, "resume_turn")
+        _fail_run(session, run, str(exc), settings=settings)
         await send_cycle_failure_notice(session=session, settings=settings, telegram=telegram, run=run)
         raise
 
@@ -949,7 +981,13 @@ def _finalize_run_artifacts(
     )
 
 
-def _fail_run(session: Session, run: OpinionRun, reason: str) -> None:
+def _fail_run(session: Session, run: OpinionRun, reason: str, *, settings: Settings | None = None) -> None:
+    if (
+        settings is not None
+        and run.git_phase not in {GitPhase.COMMITTED.value, GitPhase.PUSHED.value, GitPhase.COMPLETED.value}
+        and (_run_dir(run, settings) / "recovery" / run.id / "baseline").is_dir()
+    ):
+        archive_and_restore_run(settings, run, _run_dir(run, settings))
     if run.status in NON_TERMINAL_RUN_STATUSES:
         run.status = RunStatus.FAILED.value
     run.failure_reason = "run_failed" if run.cycle_id else reason

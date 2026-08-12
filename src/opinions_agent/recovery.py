@@ -22,6 +22,9 @@ def capture_run_baseline(settings: Settings, run: OpinionRun, run_dir: Path) -> 
     target_files = [settings.opinions_target_file, settings.opinions_sources_file]
     assert_targets_clean(settings.opinions_repo_dir, target_files)
     run.git_base_sha = run_git(settings.opinions_repo_dir, "rev-parse", "HEAD")
+    remote = run_git(settings.opinions_repo_dir, "rev-parse", f"origin/{settings.opinions_repo_branch}")
+    if run.git_base_sha != remote:
+        raise RuntimeError("opinions checkout does not match the fetched remote branch")
     run.git_phase = GitPhase.AGENT_EDITING.value
     recovery = run_dir / "recovery" / run.id
     baseline = recovery / "baseline"
@@ -43,6 +46,7 @@ def archive_and_restore_run(settings: Settings, run: OpinionRun, run_dir: Path) 
     diff = run_git(
         settings.opinions_repo_dir,
         "diff",
+        "HEAD",
         "--",
         settings.opinions_target_file,
         settings.opinions_sources_file,
@@ -52,6 +56,13 @@ def archive_and_restore_run(settings: Settings, run: OpinionRun, run_dir: Path) 
     _copy_if_present(settings.opinions_sources_path, failed / "sources.jsonl")
     corpus = CorpusPaths(settings.opinions_data_dir)
     _copy_if_present(corpus.decisions_jsonl, failed / "decisions.jsonl")
+    run_git(
+        settings.opinions_repo_dir,
+        "reset",
+        "--",
+        settings.opinions_target_file,
+        settings.opinions_sources_file,
+    )
     _restore(recovery / "baseline" / "opinions.md", settings.opinions_target_path)
     _restore(recovery / "baseline" / "sources.jsonl", settings.opinions_sources_path)
     _restore(recovery / "baseline" / "decisions.jsonl", corpus.decisions_jsonl)
@@ -62,14 +73,30 @@ def archive_and_restore_run(settings: Settings, run: OpinionRun, run_dir: Path) 
 def remote_contains_result(settings: Settings, run: OpinionRun) -> bool:
     if not run.git_result_sha:
         return False
-    output = run_git(
+    run_git(
         settings.opinions_repo_dir,
-        "ls-remote",
+        "fetch",
         "origin",
-        f"refs/heads/{settings.opinions_repo_branch}",
+        settings.opinions_repo_branch,
         env=git_credential_env(settings.opinions_git_token),
     )
-    return bool(output and output.split()[0] == run.git_result_sha)
+    import subprocess
+
+    result = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(settings.opinions_repo_dir),
+            "merge-base",
+            "--is-ancestor",
+            run.git_result_sha,
+            f"origin/{settings.opinions_repo_branch}",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0
 
 
 def reconcile_git_durability(settings: Settings, run: OpinionRun) -> bool:

@@ -2,6 +2,7 @@
 builder = "RAILPACK"
 
 [deploy]
+numReplicas = 1
 startCommand = "uv run opinions-agent init-runtime && uv run opinions-agent serve"
 healthcheckPath = "/healthz"
 healthcheckTimeout = 300

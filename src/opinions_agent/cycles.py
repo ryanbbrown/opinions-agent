@@ -9,6 +9,7 @@ import shutil
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from functools import cache
 from pathlib import Path
 from uuid import uuid4
 
@@ -18,11 +19,12 @@ from sqlalchemy.orm import Session
 
 from opinions_agent.config import Settings
 from opinions_agent.corpus import CorpusPaths, HighlightRow, document_by_id, read_highlights
-from opinions_agent.fsio import write_jsonl_atomic, write_text_atomic
+from opinions_agent.fsio import read_json, read_jsonl, write_json_atomic, write_jsonl_atomic, write_text_atomic
 from opinions_agent.models import (
     NON_TERMINAL_RUN_STATUSES,
     BatchStatus,
     CycleStatus,
+    GitPhase,
     OpinionBatch,
     OpinionCycle,
     OpinionEvidenceAssignment,
@@ -102,11 +104,10 @@ def partition_evidence(rows: list[HighlightRow]) -> list[PartitionBatch]:
             found = _best_boundaries(segments, batch_count, len(ordered))
             if found is not None:
                 return [PartitionBatch(rows=[row for segment in batch for row in segment]) for batch in found]
-            index = _blocking_segment(segments, len(ordered) / batch_count)
+            index, cut = _split_near_global_boundary(segments, len(ordered) / batch_count, batch_count)
             segment = segments[index]
             if len(segment) <= 1:
                 break
-            cut = max(1, min(len(segment) - 1, round(len(ordered) / batch_count)))
             segments[index : index + 1] = [segment[:cut], segment[cut:]]
         found = _best_boundaries(segments, batch_count, len(ordered))
         if found is not None:
@@ -125,9 +126,22 @@ def _document_groups(rows: list[HighlightRow]) -> list[list[HighlightRow]]:
     return [by_document[document_id] for document_id in order]
 
 
-def _blocking_segment(segments: list[list[HighlightRow]], target: float) -> int:
-    candidates = [(len(segment) - target, len(segment), -index, index) for index, segment in enumerate(segments)]
-    return max(candidates)[-1]
+def _split_near_global_boundary(
+    segments: list[list[HighlightRow]], target: float, batch_count: int
+) -> tuple[int, int]:
+    candidates: list[tuple[float, int, int, int]] = []
+    offset = 0
+    boundaries = [target * number for number in range(1, batch_count)]
+    for index, segment in enumerate(segments):
+        for cut in range(1, len(segment)):
+            global_position = offset + cut
+            distance = min(abs(global_position - boundary) for boundary in boundaries)
+            candidates.append((distance, -len(segment), index, cut))
+        offset += len(segment)
+    if not candidates:
+        return 0, 0
+    _, _, index, cut = min(candidates)
+    return index, cut
 
 
 def _best_boundaries(
@@ -138,23 +152,20 @@ def _best_boundaries(
     target = total_rows / batch_count
     low = math.floor(target * 0.5)
     high = math.ceil(target * 1.5)
-    candidates: list[tuple[tuple, list[list[list[HighlightRow]]]]] = []
-
-    def search(start: int, batches_left: int, built: list[list[list[HighlightRow]]]) -> None:
+    @cache
+    def search(
+        start: int,
+        batches_left: int,
+        max_row_deviation: float,
+        min_docs: int,
+        max_docs: int,
+    ) -> tuple[tuple, tuple[int, ...]] | None:
         if batches_left == 0:
-            if start != len(segments):
-                return
-            row_counts = [sum(len(segment) for segment in batch) for batch in built]
-            doc_counts = [len({row.document_id for segment in batch for row in segment}) for batch in built]
-            boundaries = tuple(batch[-1][-1].highlight_id for batch in built[:-1])
-            rank = (
-                max(abs(count - target) for count in row_counts),
-                max(doc_counts) - min(doc_counts),
-                boundaries,
-            )
-            candidates.append((rank, [list(batch) for batch in built]))
-            return
+            if start == len(segments):
+                return (max_row_deviation, max_docs - min_docs, ()), ()
+            return None
         maximum_end = len(segments) - batches_left + 1
+        best: tuple[tuple, tuple[int, ...]] | None = None
         for end in range(start + 1, maximum_end + 1):
             batch = segments[start:end]
             row_count = sum(len(segment) for segment in batch)
@@ -163,10 +174,34 @@ def _best_boundaries(
                 break
             if row_count < low:
                 continue
-            search(end, batches_left - 1, [*built, batch])
+            next_min = doc_count if min_docs == 0 else min(min_docs, doc_count)
+            suffix = search(
+                end,
+                batches_left - 1,
+                max(max_row_deviation, abs(row_count - target)),
+                next_min,
+                max(max_docs, doc_count),
+            )
+            if suffix is None:
+                continue
+            suffix_rank, suffix_ends = suffix
+            boundary_ids = () if end == len(segments) else (segments[end - 1][-1].highlight_id,)
+            rank = (suffix_rank[0], suffix_rank[1], boundary_ids + suffix_rank[2])
+            candidate = rank, (end, *suffix_ends)
+            if best is None or candidate[0] < best[0]:
+                best = candidate
+        return best
 
-    search(0, batch_count, [])
-    return min(candidates, key=lambda candidate: candidate[0])[1] if candidates else None
+    found = search(0, batch_count, 0.0, 0, 0)
+    if found is None:
+        return None
+    _, ends = found
+    result: list[list[list[HighlightRow]]] = []
+    start = 0
+    for end in ends:
+        result.append(segments[start:end])
+        start = end
+    return result
 
 
 def acquire_lease(
@@ -207,62 +242,6 @@ def release_lease(session: Session, name: str, owner_token: str) -> None:
 def week_key(value: datetime) -> str:
     year, week, _ = value.astimezone(UTC).isocalendar()
     return f"{year}-W{week:02d}"
-
-
-def start_cycle_from_corpus(
-    *,
-    session: Session,
-    settings: Settings,
-    now: datetime | None = None,
-) -> CycleStartResult:
-    """Reserve one weekly cycle, assign evidence versions, and write every bundle."""
-    current = (now or datetime.now(UTC)).astimezone(UTC)
-    owner = uuid4().hex
-    if not acquire_lease(session, "opinion-cycle-start", owner_token=owner, now=current):
-        existing = _unfinished_cycle(session)
-        if existing is None:
-            raise RuntimeError("another cycle start owns the start lease")
-        return _existing_result(existing)
-    try:
-        existing_week = session.scalar(select(OpinionCycle).where(OpinionCycle.week_key == week_key(current)))
-        if existing_week is not None:
-            return _existing_result(existing_week)
-        unfinished = _unfinished_cycle(session)
-        if unfinished is not None:
-            return _existing_result(unfinished)
-        previous = session.scalar(
-            select(OpinionCycle)
-            .where(OpinionCycle.status == CycleStatus.COMPLETED.value)
-            .order_by(OpinionCycle.window_end.desc())
-        )
-        boundary = parse_iso(settings.initial_evidence_after)
-        if previous is None and boundary is None:
-            raise ValueError("OPINIONS_INITIAL_EVIDENCE_AFTER is required for the first cycle")
-        cycle = OpinionCycle(
-            week_key=week_key(current),
-            status=CycleStatus.STARTING.value,
-            window_start=previous.window_end if previous else boundary,
-            window_end=current,
-            initial_evidence_after=boundary if previous is None else previous.initial_evidence_after,
-        )
-        session.add(cycle)
-        session.commit()
-        versions = _eligible_versions(session, settings, cycle)
-        batches = partition_evidence([version.row for version in versions])
-        _materialize_cycle(session, settings, cycle, versions, batches)
-        cycle.status = CycleStatus.ACTIVE.value if batches else CycleStatus.COMPLETED.value
-        session.commit()
-        if not batches:
-            complete_cycle_directory(settings, cycle.id)
-        return CycleStartResult(
-            cycle_id=cycle.id,
-            status=cycle.status,
-            batch_count=cycle.batch_count,
-            result_code="created" if batches else "no_evidence",
-            created=True,
-        )
-    finally:
-        release_lease(session, "opinion-cycle-start", owner)
 
 
 async def start_opinion_cycle(
@@ -463,7 +442,86 @@ def _materialize_cycle(
     cycle.evidence_count = len(versions)
     cycle.batch_count = len(batches)
     cycle.current_batch = 1 if batches else 0
+    write_json_atomic(
+        cycle_dir / "snapshot.json",
+        {
+            "cycle_id": cycle.id,
+            "evidence_count": len(versions),
+            "document_count": cycle.document_count,
+            "batch_count": len(batches),
+        },
+    )
     session.commit()
+
+
+def reconcile_starting_cycles(session: Session, settings: Settings) -> list[OpinionCycle]:
+    """Promote complete snapshots and stop incomplete reserved cycles."""
+    stopped: list[OpinionCycle] = []
+    cycles = list(session.scalars(select(OpinionCycle).where(OpinionCycle.status == CycleStatus.STARTING.value)))
+    for cycle in cycles:
+        marker = read_json(settings.runs_dir / "active" / cycle.id / "snapshot.json")
+        batches = list(
+            session.scalars(
+                select(OpinionBatch).where(OpinionBatch.cycle_id == cycle.id).order_by(OpinionBatch.batch_number)
+            )
+        )
+        batch_count = int((marker or {}).get("batch_count", -1))
+        assignments = list(
+            session.scalars(
+                select(OpinionEvidenceAssignment).where(OpinionEvidenceAssignment.cycle_id == cycle.id)
+            )
+        )
+        valid = (
+            marker is not None
+            and marker.get("cycle_id") == cycle.id
+            and batch_count == len(batches)
+            and marker.get("evidence_count") == sum(batch.evidence_count for batch in batches)
+            and marker.get("document_count") == cycle.document_count
+            and len(assignments) == marker.get("evidence_count")
+        )
+        if valid:
+            for batch in batches:
+                bundle = Path(batch.bundle_path)
+                selected = read_jsonl(bundle / "selected-highlights.jsonl")
+                selected_versions = [
+                    {
+                        "evidence_id": row["highlight_id"],
+                        "fingerprint": evidence_fingerprint(HighlightRow.model_validate(row)),
+                    }
+                    for row in selected
+                ]
+                if (
+                    len(selected) != batch.evidence_count
+                    or selected_versions != batch.evidence_versions
+                    or not (bundle / "selected-documents.jsonl").is_file()
+                    or not (bundle / "critic-context.jsonl").is_file()
+                ):
+                    valid = False
+                    break
+        if valid and batch_count == 0:
+            cycle.status = CycleStatus.COMPLETED.value
+            session.commit()
+            complete_cycle_directory(settings, cycle.id)
+        elif valid:
+            cycle.status = CycleStatus.ACTIVE.value
+            cycle.current_batch = 1
+            batches[0].status = BatchStatus.QUEUED.value
+            session.commit()
+        else:
+            for assignment in session.scalars(
+                select(OpinionEvidenceAssignment).where(OpinionEvidenceAssignment.cycle_id == cycle.id)
+            ):
+                session.delete(assignment)
+            for batch in batches:
+                session.delete(batch)
+            cycle.status = CycleStatus.STOPPED.value
+            cycle.failure_code = "snapshot_failed"
+            cycle.failure_summary = "The weekly evidence snapshot was interrupted. Retry the stopped cycle."
+            cycle.batch_count = 0
+            cycle.current_batch = 0
+            session.commit()
+            stopped.append(cycle)
+    return stopped
 
 
 def complete_cycle_directory(settings: Settings, cycle_id: str) -> Path:
@@ -492,6 +550,13 @@ def retry_stopped_cycle(session: Session, cycle_id: str) -> OpinionBatch:
     )
     if batch is None or batch.status != BatchStatus.STOPPED.value:
         raise ValueError("stopped cycle has no retryable batch")
+    latest_run = session.get(OpinionRun, batch.latest_run_id) if batch.latest_run_id else None
+    if latest_run is not None and latest_run.git_phase in {
+        GitPhase.COMMIT_INTENT.value,
+        GitPhase.COMMITTED.value,
+        GitPhase.PUSHED.value,
+    }:
+        raise ValueError("reconcile the recorded commit before retrying this batch")
     active = session.scalar(select(OpinionRun).where(OpinionRun.status.in_(NON_TERMINAL_RUN_STATUSES)))
     if active is not None:
         raise ValueError(f"run {active.id} is still active")

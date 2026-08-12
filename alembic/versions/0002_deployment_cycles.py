@@ -86,10 +86,15 @@ def upgrade() -> None:
     op.create_foreign_key("fk_opinion_runs_cycle", "opinion_runs", "opinion_cycles", ["cycle_id"], ["id"])
     op.create_index("ix_opinion_runs_cycle_id", "opinion_runs", ["cycle_id"])
     proposal_unique = next(
-        constraint["name"]
-        for constraint in sa.inspect(op.get_bind()).get_unique_constraints("opinion_proposals")
-        if constraint["column_names"] == ["opinion_run_id", "batch", "proposal_id"]
+        (
+            constraint["name"]
+            for constraint in sa.inspect(op.get_bind()).get_unique_constraints("opinion_proposals")
+            if constraint["column_names"] == ["opinion_run_id", "batch", "proposal_id"]
+        ),
+        None,
     )
+    if not proposal_unique:
+        raise RuntimeError("0002 requires the 0001 opinion proposal batch uniqueness constraint")
     op.drop_constraint(proposal_unique, "opinion_proposals", type_="unique")
     op.drop_column("opinion_proposals", "batch")
     op.create_unique_constraint(

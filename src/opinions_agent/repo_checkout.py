@@ -15,6 +15,10 @@ def ensure_opinions_repo(settings: Settings, *, refresh: bool = True) -> None:
         run_git(repo_dir, "fetch", "origin", settings.opinions_repo_branch, env=credential_env)
         run_git(repo_dir, "checkout", settings.opinions_repo_branch)
         run_git(repo_dir, "pull", "--ff-only", "origin", settings.opinions_repo_branch, env=credential_env)
+        local = run_git(repo_dir, "rev-parse", "HEAD")
+        remote = run_git(repo_dir, "rev-parse", f"origin/{settings.opinions_repo_branch}")
+        if local != remote:
+            raise RuntimeError("opinions checkout does not match the fetched remote branch")
         return
     if not settings.opinions_repo_url:
         raise ValueError("OPINIONS_REPO_URL is required when OPINIONS_REPO_DIR is not already a git checkout")

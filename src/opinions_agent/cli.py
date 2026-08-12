@@ -27,6 +27,7 @@ from opinions_agent.sample_run import (
 )
 from opinions_agent.selection import RunPaths, cleanup_completed_runs
 from opinions_agent.telegram import FakeTelegramClient, TelegramClient
+from opinions_agent.worker import reconcile_startup
 from opinions_agent.workflow import (
     ActiveRunError,
     abandon_run,
@@ -115,9 +116,9 @@ async def _run(args: argparse.Namespace) -> None:
         init_db(engine)
         return
     if args.command == "init-runtime":
-        if settings.volume_mount_path is not None:
-            from opinions_agent.config import validate_web_settings
+        from opinions_agent.config import is_railway_runtime, validate_web_settings
 
+        if is_railway_runtime():
             validate_web_settings(settings)
         init_data_dirs(corpus)
         RunPaths(settings.runs_dir).active_dir.mkdir(parents=True, exist_ok=True)
@@ -153,6 +154,7 @@ async def _run(args: argparse.Namespace) -> None:
         return
     if args.command == "retry-cycle":
         with SessionLocal() as session:
+            reconcile_startup(session, settings)
             cycle = session.get(OpinionCycle, args.cycle_id)
             if cycle is not None and cycle.failure_code == "snapshot_failed":
                 result = await retry_stopped_snapshot(
