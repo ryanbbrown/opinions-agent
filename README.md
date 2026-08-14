@@ -91,7 +91,7 @@ Required local variables include `DATABASE_URL`, Reader and Telegram credentials
 `openai:gpt-5.6-sol` at medium effort. Braintrust keys enable tracing and are required for `eval run`.
 
 Safety default: `OPINIONS_TARGET_FILE` defaults to `TEST_OPINIONS.md` so local runs never touch the real
-`OPINIONS.md` by accident. Production (Railway) must set `OPINIONS_TARGET_FILE=OPINIONS.md` explicitly. Note that
+`OPINIONS.md` by accident. Railway must set `OPINIONS_TARGET_FILE=OPINIONS.md` explicitly. Note that
 approvals push to `OPINIONS_REPO_URL`, which defaults to the real repo — point `OPINIONS_REPO_DIR`/`OPINIONS_REPO_URL`
 at a disposable repo when experimenting.
 
@@ -185,9 +185,9 @@ Create two Railway services from this repository. Give the web service `railway.
 - Register `https://<web-domain>/telegram/webhook` with `set-telegram-webhook`. Use the configured webhook secret.
 - Enable Railway volume backups for the mounted data directory; the opinions repo is separately durable via git.
 
-For staging, use separate PostgreSQL, volume, Telegram credentials, repository token, and disposable repository or
-branch. Set `OPINIONS_ENVIRONMENT=staging` and `OPINIONS_TARGET_FILE=TEST_OPINIONS.md`. For production, set
-`OPINIONS_ENVIRONMENT=prod` and `OPINIONS_TARGET_FILE=OPINIONS.md`. Both require
+For staging, use separate PostgreSQL, volume, and Telegram credentials. Set `OPINIONS_ENVIRONMENT=staging` and
+`OPINIONS_REPO_BRANCH=staging`. Set production to `OPINIONS_ENVIRONMENT=prod` and `OPINIONS_REPO_BRANCH=main`.
+Both environments use `OPINIONS_TARGET_FILE=OPINIONS.md`. Both require
 `OPINIONS_SOURCES_FILE=OPINIONS_SOURCES.jsonl` and an explicit `OPINIONS_INITIAL_EVIDENCE_AFTER` timestamp. This
 timestamp is the oldest evidence version that the first cycle can assign.
 

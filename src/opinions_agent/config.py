@@ -148,11 +148,13 @@ def validate_web_settings(settings: Settings) -> None:
         raise ValueError("OPINIONS_REPO_URL must not contain credentials")
     if settings.use_fake_telegram or settings.local_tracing_enabled:
         raise ValueError("Railway web cannot use fake Telegram or local plaintext tracing")
-    expected_target = "TEST_OPINIONS.md" if settings.environment == "staging" else "OPINIONS.md"
-    if settings.opinions_target_file != expected_target:
-        raise ValueError(f"{settings.environment} requires OPINIONS_TARGET_FILE={expected_target}")
+    if settings.opinions_target_file != "OPINIONS.md":
+        raise ValueError(f"{settings.environment} requires OPINIONS_TARGET_FILE=OPINIONS.md")
     if settings.opinions_sources_file != "OPINIONS_SOURCES.jsonl":
         raise ValueError("Railway web requires OPINIONS_SOURCES_FILE=OPINIONS_SOURCES.jsonl")
+    expected_branch = "staging" if settings.environment == "staging" else "main"
+    if settings.opinions_repo_branch != expected_branch:
+        raise ValueError(f"{settings.environment} requires OPINIONS_REPO_BRANCH={expected_branch}")
     if settings.environment == "prod" and not (settings.braintrust_api_key and settings.braintrust_project_id):
         raise ValueError("production requires BRAINTRUST_API_KEY and BRAINTRUST_PROJECT_ID")
 

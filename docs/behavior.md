@@ -192,6 +192,9 @@ Approved changes become durable only after the app validates, commits, and pushe
 - GIT-9: Restart recovery reconciles stored commit data with local and remote commits before it starts agent work again.
 - GIT-10: Failed edits are archived, and only configured writable artifacts are restored from their recorded baseline.
 - GIT-11: A retry creates a new run for the stored batch. It never repeats a pushed batch.
+- GIT-12: Deployed staging writes `OPINIONS.md` and `OPINIONS_SOURCES.jsonl` only on the `staging` branch.
+- GIT-13: Deployed production writes the same artifact names only on the `main` branch.
+- GIT-14: Staging and production use separate runtime volumes and databases, so their decision context and workflow state remain isolated.
 
 ## Evals And Observability
 

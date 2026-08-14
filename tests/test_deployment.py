@@ -47,7 +47,8 @@ def railway_settings(settings: Settings, tmp_path: Path, *, environment: str) ->
         opinions_git_token="git-token",
         initial_evidence_after="2026-06-01T00:00:00+00:00",
         opinions_repo_url="https://github.com/example/opinions.git",
-        opinions_target_file="TEST_OPINIONS.md" if environment == "staging" else "OPINIONS.md",
+        opinions_repo_branch="staging" if environment == "staging" else "main",
+        opinions_target_file="OPINIONS.md",
         local_tracing_enabled=False,
         use_fake_telegram=False,
     )
@@ -66,8 +67,10 @@ def test_web_and_cron_validation_are_independent(
     validate_cron_settings(cron)
     with pytest.raises(ValueError, match="OPINIONS_START_URL"):
         validate_cron_settings(replace(cron, opinions_start_url=""))
-    with pytest.raises(ValueError, match="staging requires"):
-        validate_web_settings(replace(web, opinions_target_file="OPINIONS.md"))
+    with pytest.raises(ValueError, match="staging requires OPINIONS_REPO_BRANCH=staging"):
+        validate_web_settings(replace(web, opinions_repo_branch="main"))
+    with pytest.raises(ValueError, match="requires OPINIONS_TARGET_FILE=OPINIONS.md"):
+        validate_web_settings(replace(web, opinions_target_file="TEST_OPINIONS.md"))
     with pytest.raises(ValueError, match="must not contain credentials"):
         validate_web_settings(replace(web, opinions_repo_url="https://token@github.com/example/repo.git"))
 
@@ -106,6 +109,23 @@ def test_production_validation_requires_tracing_credentials(
     configured = railway_settings(settings, tmp_path, environment="prod")
 
     with pytest.raises(ValueError, match="production requires"):
+        validate_web_settings(configured)
+
+
+def test_production_validation_requires_main_branch(
+    settings: Settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+    configured = replace(
+        railway_settings(settings, tmp_path, environment="prod"),
+        braintrust_api_key="braintrust-key",
+        braintrust_project_id="project-id",
+        opinions_repo_branch="staging",
+    )
+
+    with pytest.raises(ValueError, match="prod requires OPINIONS_REPO_BRANCH=main"):
         validate_web_settings(configured)
 
 
