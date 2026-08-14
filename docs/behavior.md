@@ -60,7 +60,10 @@ Each opinion run deterministically selects the evidence window, writes an inspec
 - RUN-13: Local sample runs are disposable run-scoped executions. They copy selected opinion artifacts and corpus context under the run directory, point the agent at those copied paths, and must not grant the agent read/write access to the original opinion repository files.
 - RUN-14: Human-readable sample run IDs may include the start timestamp and requested corpus week label so local runs can be inspected chronologically.
 - RUN-15: Local sample sessions are disposable session-scoped executions. They copy opinion artifacts and corpus context once, keep database state, run artifacts, memory, decisions, and local git commits under the session directory, and let later week runs start from earlier approved session changes without touching the original opinion repository files.
-- RUN-16: A weekly cycle owns one fixed evidence snapshot and one or more ordered batches.
+- RUN-16: A weekly cycle owns one fixed seven-day evidence window, one fixed evidence snapshot, and one or more ordered batches.
+- RUN-16A: The first weekly window starts at the fixed launch boundary. Each later window starts when the previous completed window ended.
+- RUN-16B: A weekly window ends exactly seven days after it starts. A cycle cannot include evidence from a later weekly window.
+- RUN-16C: Weekly windows use UTC boundaries from Monday at 00:00 through the next Monday at 00:00.
 - RUN-17: PostgreSQL assigns each evidence ID and content fingerprint to one cycle. Changed content creates a new eligible evidence version.
 - RUN-18: A first deployed cycle requires a fixed launch boundary. Older evidence versions become an ignored baseline.
 - RUN-19: A cycle uses one batch only below both limits of 20 documents and 50 evidence rows.
@@ -71,8 +74,8 @@ Each opinion run deterministically selects the evidence window, writes an inspec
 - RUN-24: Later corpus changes cannot change a cycle bundle. Only selected evidence in the current batch is citable.
 - RUN-25: A completed batch queues the next batch after its accepted repository changes are durable.
 - RUN-26: A cycle completes after all batches complete. A cycle with no evidence completes with zero batches.
-- RUN-27: Repeated weekly starts return existing work. An unfinished cycle blocks a later weekly cycle.
-- RUN-28: Newly synced or changed evidence remains eligible even when its source timestamp is before the last cycle end.
+- RUN-27: Repeated starts for the next weekly window return existing work. An unfinished cycle blocks a later weekly cycle.
+- RUN-28: Newly synced or changed evidence remains eligible when its source timestamp is before the current window start. Evidence at or after the current window end remains eligible for a later cycle.
 
 ## Agent Runtime Shape
 

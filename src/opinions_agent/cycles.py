@@ -259,17 +259,13 @@ async def start_opinion_cycle(
     if not acquire_lease(session, "opinion-cycle-start", owner_token=owner, now=current):
         for _ in range(50):
             session.expire_all()
-            existing = session.scalar(select(OpinionCycle).where(OpinionCycle.week_key == week_key(current)))
-            existing = existing or _unfinished_cycle(session)
+            existing = _unfinished_cycle(session)
             if existing is not None:
                 return _existing_result(existing)
             await asyncio.sleep(0.02)
         raise RuntimeError("another cycle start has not finished its reservation")
     cycle: OpinionCycle | None = None
     try:
-        existing_week = session.scalar(select(OpinionCycle).where(OpinionCycle.week_key == week_key(current)))
-        if existing_week is not None:
-            return _existing_result(existing_week)
         unfinished = _unfinished_cycle(session)
         if unfinished is not None:
             return _existing_result(unfinished)
@@ -281,11 +277,25 @@ async def start_opinion_cycle(
         boundary = parse_iso(settings.initial_evidence_after)
         if previous is None and boundary is None:
             raise ValueError("OPINIONS_INITIAL_EVIDENCE_AFTER is required for the first cycle")
+        if previous is not None:
+            window_start = _ensure_utc(previous.window_end)
+        else:
+            assert boundary is not None
+            window_start = _ensure_utc(boundary)
+        if window_start.weekday() != 0 or window_start.time() != datetime.min.time():
+            raise ValueError("weekly launch boundary must be Monday at 00:00 UTC")
+        window_end = window_start + timedelta(days=7)
+        if current < window_end:
+            raise ValueError("next weekly window has not ended")
+        target_week_key = week_key(window_start)
+        existing_week = session.scalar(select(OpinionCycle).where(OpinionCycle.week_key == target_week_key))
+        if existing_week is not None:
+            return _existing_result(existing_week)
         cycle = OpinionCycle(
-            week_key=week_key(current),
+            week_key=target_week_key,
             status=CycleStatus.STARTING.value,
-            window_start=previous.window_end if previous else boundary,
-            window_end=current,
+            window_start=window_start,
+            window_end=window_end,
             initial_evidence_after=boundary if previous is None else previous.initial_evidence_after,
         )
         session.add(cycle)
@@ -360,6 +370,8 @@ def _eligible_versions(session: Session, settings: Settings, cycle: OpinionCycle
                     disposition="baseline_ignored",
                 )
             )
+            continue
+        if source_time is not None and source_time >= _ensure_utc(cycle.window_end):
             continue
         versions.append(EvidenceVersion(row, fingerprint))
     session.commit()

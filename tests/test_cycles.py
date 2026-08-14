@@ -193,6 +193,99 @@ async def test_cycle_materializes_all_batches_and_assigns_versions(session, sett
     assert duplicate.created is False
 
 
+async def test_backlog_start_freezes_only_the_next_sequential_week(session, settings: Settings) -> None:
+    settings = settings.__class__(
+        **{**settings.__dict__, "initial_evidence_after": "2026-06-15T00:00:00+00:00"}
+    )
+    corpus = CorpusPaths(settings.opinions_data_dir)
+    init_data_dirs(corpus)
+    evidence = [
+        rows([1])[0].model_copy(
+            update={
+                "highlight_id": "rw:before",
+                "document_id": "reader:before",
+                "highlighted_at": "2026-06-14T23:59:59+00:00",
+            }
+        ),
+        rows([1])[0].model_copy(
+            update={
+                "highlight_id": "rw:monday",
+                "document_id": "reader:monday",
+                "highlighted_at": "2026-06-15T00:00:00+00:00",
+            }
+        ),
+        rows([1])[0].model_copy(
+            update={
+                "highlight_id": "rw:sunday",
+                "document_id": "reader:sunday",
+                "highlighted_at": "2026-06-21T23:59:59+00:00",
+            }
+        ),
+        rows([1])[0].model_copy(
+            update={
+                "highlight_id": "rw:next-monday",
+                "document_id": "reader:next-monday",
+                "highlighted_at": "2026-06-22T00:00:00+00:00",
+            }
+        ),
+    ]
+    upsert_documents(
+        corpus,
+        [DocumentRow(document_id=row.document_id, reader_id=row.reader_id, title=row.document_id) for row in evidence],
+    )
+    upsert_highlights(corpus, evidence)
+
+    first = await start_opinion_cycle(
+        session=session,
+        settings=settings,
+        sync_corpus=_no_sync,
+        now=datetime(2026, 8, 12, tzinfo=UTC),
+    )
+
+    first_cycle = session.get(OpinionCycle, first.cycle_id)
+    assert first_cycle is not None
+    assert first_cycle.week_key == "2026-W25"
+    assert first_cycle.window_start.replace(tzinfo=UTC) == datetime(2026, 6, 15, tzinfo=UTC)
+    assert first_cycle.window_end.replace(tzinfo=UTC) == datetime(2026, 6, 22, tzinfo=UTC)
+    first_batch = session.scalar(select(OpinionBatch).where(OpinionBatch.cycle_id == first.cycle_id))
+    assert first_batch is not None
+    assert [row["evidence_id"] for row in first_batch.evidence_versions] == ["rw:monday", "rw:sunday"]
+
+    first_cycle.status = CycleStatus.COMPLETED.value
+    session.commit()
+    second = await start_opinion_cycle(
+        session=session,
+        settings=settings,
+        sync_corpus=_no_sync,
+        now=datetime(2026, 8, 12, 1, tzinfo=UTC),
+    )
+
+    second_cycle = session.get(OpinionCycle, second.cycle_id)
+    assert second_cycle is not None
+    assert second_cycle.week_key == "2026-W26"
+    assert second_cycle.window_start.replace(tzinfo=UTC) == datetime(2026, 6, 22, tzinfo=UTC)
+    assert second_cycle.window_end.replace(tzinfo=UTC) == datetime(2026, 6, 29, tzinfo=UTC)
+    second_batch = session.scalar(select(OpinionBatch).where(OpinionBatch.cycle_id == second.cycle_id))
+    assert second_batch is not None
+    assert [row["evidence_id"] for row in second_batch.evidence_versions] == ["rw:next-monday"]
+
+
+async def test_cycle_refuses_to_freeze_an_incomplete_week(session, settings: Settings) -> None:
+    settings = settings.__class__(
+        **{**settings.__dict__, "initial_evidence_after": "2026-06-15T00:00:00+00:00"}
+    )
+
+    with pytest.raises(ValueError, match="next weekly window has not ended"):
+        await start_opinion_cycle(
+            session=session,
+            settings=settings,
+            sync_corpus=_no_sync,
+            now=datetime(2026, 6, 21, 23, 59, tzinfo=UTC),
+        )
+
+    assert session.scalar(select(OpinionCycle)) is None
+
+
 async def test_worker_continues_batches_after_telegram_completion(
     session,
     settings: Settings,

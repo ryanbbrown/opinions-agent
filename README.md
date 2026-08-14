@@ -181,6 +181,7 @@ Create two Railway services from this repository. Give the web service `railway.
 - Set `OPINIONS_START_URL=https://<web-domain>/internal/opinion-cycle/start` and the same random
   `OPINIONS_START_SECRET` on both services. The cron service needs only those two values.
 - Choose one weekly UTC cron schedule in the Railway cron service settings. The cron only sends the start request.
+- Set the launch boundary to Monday at 00:00 UTC. Each cycle processes the next complete seven-day window, even while catching up.
 - Register `https://<web-domain>/telegram/webhook` with `set-telegram-webhook`. Use the configured webhook secret.
 - Enable Railway volume backups for the mounted data directory; the opinions repo is separately durable via git.
 
@@ -197,7 +198,7 @@ Smoke checklist after a deploy:
 
 1. `curl https://<service>/healthz` returns `{"status":"ok"}`.
 2. `init-runtime` logged `runtime initialized` (dirs, repo checkout, migrations).
-3. `cron-trigger` returns a cycle ID. A repeated same-week request returns the same cycle.
+3. `cron-trigger` returns a cycle ID. A repeated request returns the active cycle.
 4. Answering all required current-turn messages, or sending exact `GO` / `SKIP`, resumes the same agent conversation.
    Successful approved changes push a commit to the opinions repo touching only `OPINIONS.md` and
    `OPINIONS_SOURCES.jsonl`.
