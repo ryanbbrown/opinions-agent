@@ -462,6 +462,8 @@ def _materialize_cycle(
     cycle.evidence_count = len(versions)
     cycle.batch_count = len(batches)
     cycle.current_batch = 1 if batches else 0
+    cycle.failure_code = None
+    cycle.failure_summary = None
     write_json_atomic(
         cycle_dir / "snapshot.json",
         {
@@ -476,6 +478,9 @@ def _materialize_cycle(
 
 def reconcile_starting_cycles(session: Session, settings: Settings) -> list[OpinionCycle]:
     """Promote complete snapshots and stop incomplete reserved cycles."""
+    start_lease = session.get(WorkflowLease, "opinion-cycle-start")
+    if start_lease is not None and _ensure_utc(start_lease.expires_at) > datetime.now(UTC):
+        return []
     stopped: list[OpinionCycle] = []
     cycles = list(session.scalars(select(OpinionCycle).where(OpinionCycle.status == CycleStatus.STARTING.value)))
     for cycle in cycles:
@@ -520,11 +525,15 @@ def reconcile_starting_cycles(session: Session, settings: Settings) -> list[Opin
                     break
         if valid and batch_count == 0:
             cycle.status = CycleStatus.COMPLETED.value
+            cycle.failure_code = None
+            cycle.failure_summary = None
             session.commit()
             complete_cycle_directory(settings, cycle.id)
         elif valid:
             cycle.status = CycleStatus.ACTIVE.value
             cycle.current_batch = 1
+            cycle.failure_code = None
+            cycle.failure_summary = None
             batches[0].status = BatchStatus.QUEUED.value
             session.commit()
         else:

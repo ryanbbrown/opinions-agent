@@ -76,6 +76,7 @@ Each opinion run deterministically selects the evidence window, writes an inspec
 - RUN-26: A cycle completes after all batches complete. A cycle with no evidence completes with zero batches.
 - RUN-27: Repeated starts for the next weekly window return existing work. An unfinished cycle blocks a later weekly cycle.
 - RUN-28: Newly synced or changed evidence remains eligible when its source timestamp is before the current window start. Evidence at or after the current window end remains eligible for a later cycle.
+- RUN-29: Recovery leaves a starting cycle unchanged while its start lease is valid. It treats the snapshot as interrupted only after that lease is absent or expired.
 
 ## Agent Runtime Shape
 

@@ -39,6 +39,7 @@ from opinions_agent.models import (
     OpinionEvidenceAssignment,
     OpinionRun,
     RunStatus,
+    WorkflowLease,
 )
 from opinions_agent.telegram import FakeTelegramClient
 from opinions_agent.worker import process_queued_once, reconcile_startup
@@ -928,10 +929,58 @@ async def test_reconcile_starting_cycle_promotes_complete_snapshot_or_stops_part
         window_start=datetime(2026, 6, 19, tzinfo=UTC),
         window_end=datetime(2026, 6, 26, tzinfo=UTC),
     )
-    session.add(reserved)
+    session.add_all(
+        [
+            reserved,
+            WorkflowLease(
+                name="opinion-cycle-start",
+                owner_token="dead-worker",
+                expires_at=datetime.now(UTC) - timedelta(minutes=1),
+            ),
+        ]
+    )
     session.commit()
     assert [cycle.id for cycle in reconcile_starting_cycles(session, settings)] == [reserved.id]
     assert session.get(OpinionCycle, reserved.id).status == CycleStatus.STOPPED.value
+
+
+async def test_recovery_leaves_a_live_snapshot_alone(session, settings: Settings) -> None:
+    settings = settings.__class__(
+        **{**settings.__dict__, "initial_evidence_after": "2026-06-01T00:00:00+00:00"}
+    )
+    corpus = CorpusPaths(settings.opinions_data_dir)
+    init_data_dirs(corpus)
+    evidence = rows([1])
+    upsert_documents(corpus, [DocumentRow(document_id=evidence[0].document_id, reader_id="0", title="Doc")])
+    upsert_highlights(corpus, evidence)
+    sync_started = asyncio.Event()
+    allow_sync_to_finish = asyncio.Event()
+
+    async def slow_sync() -> None:
+        sync_started.set()
+        await allow_sync_to_finish.wait()
+
+    SessionLocal = sessionmaker(bind=session.get_bind(), expire_on_commit=False)
+    with SessionLocal() as start_session, SessionLocal() as recovery_session:
+        start = asyncio.create_task(
+            start_opinion_cycle(
+                session=start_session,
+                settings=settings,
+                sync_corpus=slow_sync,
+                now=datetime.now(UTC),
+            )
+        )
+        await sync_started.wait()
+        reconciliation = reconcile_startup(recovery_session, settings)
+        allow_sync_to_finish.set()
+        result = await start
+
+    cycle = session.get(OpinionCycle, result.cycle_id)
+    assert reconciliation.stopped_cycles == []
+    assert cycle is not None
+    assert cycle.status == CycleStatus.ACTIVE.value
+    assert cycle.failure_code is None
+    assert cycle.failure_summary is None
 
 
 async def _no_sync() -> None:
