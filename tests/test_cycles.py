@@ -287,6 +287,39 @@ async def test_cycle_refuses_to_freeze_an_incomplete_week(session, settings: Set
     assert session.scalar(select(OpinionCycle)) is None
 
 
+async def test_new_cycle_sends_date_header_before_proposals_without_a_single_batch_label(
+    session,
+    settings: Settings,
+    opinions_repo,
+) -> None:
+    settings = settings.__class__(
+        **{**settings.__dict__, "initial_evidence_after": "2026-07-13T00:00:00+00:00"}
+    )
+    corpus = CorpusPaths(settings.opinions_data_dir)
+    init_data_dirs(corpus)
+    evidence = rows([1])
+    evidence[0] = evidence[0].model_copy(update={"highlighted_at": "2026-07-13T12:00:00+00:00"})
+    upsert_documents(corpus, [DocumentRow(document_id=evidence[0].document_id, reader_id="0", title="Doc")])
+    upsert_highlights(corpus, evidence)
+    await start_opinion_cycle(
+        session=session,
+        settings=settings,
+        sync_corpus=_no_sync,
+        now=datetime(2026, 7, 21, tzinfo=UTC),
+    )
+    telegram = FakeTelegramClient()
+
+    assert await process_queued_once(session, settings, DeterministicOpinionAgent(), telegram) is True
+    assert telegram.sent[0][1].text == (
+        "====================\n\n"
+        "<b>START OPINION RUN</b>\n"
+        "July 13-19, 2026\n\n"
+        "===================="
+    )
+    assert "batch" not in telegram.sent[0][1].text
+    assert telegram.sent[1][1].buttons
+
+
 async def test_worker_continues_batches_after_telegram_completion(
     session,
     settings: Settings,
@@ -319,6 +352,13 @@ async def test_worker_continues_batches_after_telegram_completion(
     agent = DeterministicOpinionAgent()
 
     assert await process_queued_once(session, settings, agent, telegram) is True
+    assert telegram.sent[0][1].text == (
+        "====================\n\n"
+        "<b>START OPINION RUN</b>\n"
+        "June 1-7, 2026\n"
+        "(batch 1 of 2)\n\n"
+        "===================="
+    )
     assert await handle_telegram_update(
         session=session,
         settings=settings,
@@ -346,6 +386,14 @@ async def test_worker_continues_batches_after_telegram_completion(
     assert batches[0].successful_run_id == first_successful_run
 
     assert await process_queued_once(session, settings, agent, telegram) is True
+    start_notices = [spec.text for _, spec in telegram.sent if "START OPINION RUN" in spec.text]
+    assert start_notices[-1] == (
+        "====================\n\n"
+        "<b>START OPINION RUN</b>\n"
+        "June 1-7, 2026\n"
+        "(batch 2 of 2)\n\n"
+        "===================="
+    )
     assert await handle_telegram_update(
         session=session,
         settings=settings,
@@ -491,7 +539,8 @@ async def test_worker_claim_serializes_agent_turns_and_expired_run_is_swept(
     assert await process_queued_once(session, settings, DeterministicOpinionAgent(), telegram) is False
     assert run.status == RunStatus.FAILED.value
     assert session.get(OpinionCycle, cycle_result.cycle_id).status == CycleStatus.STOPPED.value
-    assert len(telegram.sent) == 1
+    assert len(telegram.sent) == 2
+    assert "stopped at batch 1" in telegram.sent[-1][1].text
 
 
 @pytest.mark.parametrize("failure_point", ["ensure_opinions_repo", "capture_run_baseline"])

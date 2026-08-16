@@ -125,11 +125,11 @@ async def test_start_run_writes_bundle_and_sends_agent_messages(
     assert "<b>Add Opinion #1</b>" in initial_telegram
     assert "<blockquote expandable>" in initial_telegram
     assert "Buttons: Approve, Reject" in initial_telegram
-    assert len(telegram.sent) == 1
-    assert [button.text for button in telegram.sent[0][1].buttons] == ["Approve", "Reject"]
+    assert len(telegram.sent) == 2
+    assert [button.text for button in telegram.sent[1][1].buttons] == ["Approve", "Reject"]
     outbound = outbound_for_run(session, run)
     assert outbound.idempotency_key == f"opinion-run:{run.id}:turn:1:message:0"
-    assert outbound.message_id == 1001
+    assert outbound.message_id == 1002
 
 
 async def test_no_highlights_in_window_creates_no_run(session, settings: Settings, opinions_repo: Path) -> None:

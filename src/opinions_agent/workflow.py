@@ -115,6 +115,18 @@ def _run_window(
     return end - DEFAULT_WINDOW, end
 
 
+def _format_run_dates(window_start: datetime, window_end: datetime) -> str:
+    start = window_start.replace(tzinfo=UTC) if window_start.tzinfo is None else window_start.astimezone(UTC)
+    end = window_end.replace(tzinfo=UTC) if window_end.tzinfo is None else window_end.astimezone(UTC)
+    first = start.date()
+    last = (end - timedelta(microseconds=1)).date()
+    if first.year == last.year and first.month == last.month:
+        return f"{first:%B} {first.day}-{last.day}, {first.year}"
+    if first.year == last.year:
+        return f"{first:%B} {first.day}-{last:%B} {last.day}, {first.year}"
+    return f"{first:%B} {first.day}, {first.year}-{last:%B} {last.day}, {last.year}"
+
+
 async def start_opinion_run(
     *,
     session: Session,
@@ -307,6 +319,7 @@ async def _run_agent_turn(
     prompt_fragment: str | None,
 ) -> None:
     require_complete_baseline(run, _run_dir(run, settings))
+    initial_turn = run.status == RunStatus.PENDING_AGENT.value and run.turn_seq == 0 and prompt_fragment is None
     if run.status == RunStatus.PENDING_AGENT.value:
         transition(run, RunStatus.RUNNING_AGENT)
         run.lease_owner = uuid4().hex
@@ -315,6 +328,11 @@ async def _run_agent_turn(
     lease_owner = run.lease_owner
     heartbeat = asyncio.create_task(_heartbeat_run_lease(session.get_bind(), run.id, lease_owner))
     try:
+        if initial_turn:
+            try:
+                await send_run_start_notice(session=session, settings=settings, telegram=telegram, run=run)
+            except Exception as exc:
+                _log_operational_failure(settings, run, exc, "run_start_notice")
         await _execute_claimed_turn(
             session=session,
             settings=settings,
@@ -612,6 +630,32 @@ async def send_snapshot_failure_notice(
                 f"Failure code: {code}. Retry with: opinions-agent retry-cycle {cycle.id}"
             )
         ),
+    )
+
+
+async def send_run_start_notice(
+    *,
+    session: Session,
+    settings: Settings,
+    telegram: TelegramSender,
+    run: OpinionRun,
+) -> None:
+    lines = [
+        "====================",
+        "",
+        "<b>START OPINION RUN</b>",
+        _format_run_dates(run.window_start, run.window_end),
+    ]
+    if run.batch_count > 1:
+        lines.append(f"(batch {run.batch} of {run.batch_count})")
+    lines.extend(["", "===================="])
+    await _send_idempotent(
+        session=session,
+        settings=settings,
+        telegram=telegram,
+        key=f"opinion-run:{run.id}:start",
+        run_id=None,
+        spec=TelegramMessageSpec(text="\n".join(lines)),
     )
 
 
