@@ -131,8 +131,8 @@ Telegram provides human approval or revision for proposed conceptual opinion cha
 - TELEGRAM-2B: Revised proposal messages preserve the original proposal's visible number and conceptual identity. For example, a revision of `Add Opinion #2` is titled `Add Opinion #2 (Revised)`, not as a new proposal number.
 - TELEGRAM-3: Only `TELEGRAM_ALLOWED_CHAT_ID` may drive the run through callbacks, replies, or exact standalone `GO`/`SKIP` commands.
 - TELEGRAM-4: Telegram callbacks and reply messages are idempotent and scoped to the stored outbound message they reference by `(chat_id, message_id)`.
-- TELEGRAM-5: For callbacks, the app finds the stored outbound message by `(chat_id, message_id)`, verifies the callback data matches a stored button on that message, records the callback, answers Telegram's callback query, edits the original Telegram message to show the selected status, and removes the inline keyboard so handled proposals are visually distinct.
-- TELEGRAM-6: For replies, the app finds the stored outbound message being replied to by `(chat_id, message_id)`, records the concrete user reply, edits the original Telegram message to show that a reply was received, and removes the inline keyboard so handled proposals are visually distinct. A free-text reply is contextual feedback, not approval. It may request revision, ask for more context, or explain rejection, but only an approval callback authorizes durable edits for that proposal.
+- TELEGRAM-5: For callbacks, the app finds the stored outbound message by `(chat_id, message_id)`, verifies the callback data matches a stored button on that message, durably records the callback, answers Telegram's callback query, and attempts to edit the original message to show the selected status and remove its keyboard.
+- TELEGRAM-6: For replies, the app finds the stored outbound message being replied to by `(chat_id, message_id)`, durably records the concrete user reply, and attempts to edit the original message to show that a reply was received and remove its keyboard. A free-text reply is contextual feedback, not approval. It may request revision, ask for more context, or explain rejection, but only an approval callback authorizes durable edits for that proposal.
 - TELEGRAM-7: Exact standalone `GO` and `SKIP` remain valid Telegram commands only from `TELEGRAM_ALLOWED_CHAT_ID` while a run is awaiting user input.
 - TELEGRAM-8: A callback or reply does not by itself resume the agent. The app records individual responses until every outbound message awaiting a user response has been answered.
 - TELEGRAM-9: When all expected responses are present, the app atomically claims the run with `awaiting_user -> running_agent` and resumes the same agent conversation with the relevant original message text/buttons plus concrete user actions/replies. If the claim fails, another request already started or completed the resume.
@@ -141,6 +141,7 @@ Telegram provides human approval or revision for proposed conceptual opinion cha
 - TELEGRAM-12: A failed agent resume marks the run failed and records the failure reason.
 - TELEGRAM-13: A successful batch starts the next queued batch automatically. Telegram requests do not wait for that model call.
 - TELEGRAM-14: A stopped cycle sends one generic failure notice. The notice contains no exception text or credential.
+- TELEGRAM-15: Failure to edit an already-sent Telegram message is cosmetic. It does not discard a recorded response, fail the webhook, or block the run from resuming.
 
 ## Opinion Files And Provenance
 

@@ -267,6 +267,44 @@ async def test_reply_marks_original_message_addressed_without_resuming_until_all
     assert edited_text == "<b>💬 Reply received - First?</b>"
 
 
+async def test_message_edit_failures_do_not_discard_responses_or_block_resume(
+    session,
+    settings: Settings,
+    opinions_repo: Path,
+) -> None:
+    seed_corpus(settings)
+
+    class FailingEditTelegram(FakeTelegramClient):
+        async def edit_message_text(self, chat_id: int, message_id: int, text: str) -> None:
+            raise RuntimeError("Telegram edit failed: message is not modified")
+
+    telegram = FailingEditTelegram()
+    agent = TwoMessageAgent()
+    run = await start_run(session, settings, telegram, agent)
+    outbounds = list(
+        session.scalars(
+            select(TelegramInteraction)
+            .where(TelegramInteraction.direction == "outbound", TelegramInteraction.opinion_run_id == run.id)
+            .order_by(TelegramInteraction.id)
+        )
+    )
+
+    first = await handle(session, settings, telegram, callback_update(203, outbounds[0], "approve:first"), agent)
+    SessionLocal = sessionmaker(bind=session.get_bind(), expire_on_commit=False)
+    with SessionLocal() as durable_session:
+        stored = durable_session.scalar(
+            select(TelegramInteraction).where(TelegramInteraction.callback_query_id == "cb-203")
+        )
+        assert stored is not None and stored.status == "recorded"
+
+    second = await handle(session, settings, telegram, reply_update(204, outbounds[1], "reject this"), agent)
+
+    assert first == "recorded"
+    assert second == "resumed"
+    assert run.status == RunStatus.COMPLETED.value
+    assert telegram.answered_callbacks == [("cb-203", "Approve")]
+
+
 async def test_skip_resumes_without_app_side_decisions(session, settings: Settings, opinions_repo: Path) -> None:
     seed_corpus(settings)
     telegram = FakeTelegramClient()

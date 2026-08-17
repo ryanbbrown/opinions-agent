@@ -788,12 +788,19 @@ async def _handle_callback(
     if run is None or run.status != RunStatus.AWAITING_USER.value:
         await _answer_callback_query_best_effort(telegram, callback_id, "This run is no longer awaiting input")
         return "stale"
+    if message_id in _responses_by_message(session, run):
+        await _answer_callback_query_best_effort(telegram, callback_id, "Already recorded")
+        return "duplicate"
     _record_response(inbound, outbound, user_action=button_text, callback_data=data)
+    session.commit()
     await _answer_callback_query_best_effort(telegram, callback_id, button_text)
-    await telegram.edit_message_text(
-        chat_id,
-        message_id,
-        _addressed_message_text(outbound.text or "", button_text),
+    await _edit_message_text_best_effort(
+        settings=settings,
+        telegram=telegram,
+        run=run,
+        chat_id=chat_id,
+        message_id=message_id,
+        text=_addressed_message_text(outbound.text or "", button_text),
     )
     if _current_turn_ready(session, run):
         return await _resume_from_telegram(
@@ -815,6 +822,21 @@ async def _answer_callback_query_best_effort(
         await telegram.answer_callback_query(callback_query_id, text)
     except Exception:
         pass
+
+
+async def _edit_message_text_best_effort(
+    *,
+    settings: Settings,
+    telegram: TelegramSender,
+    run: OpinionRun,
+    chat_id: int,
+    message_id: int,
+    text: str,
+) -> None:
+    try:
+        await telegram.edit_message_text(chat_id, message_id, text)
+    except Exception as exc:
+        _log_operational_failure(settings, run, exc, "telegram_message_edit")
 
 
 async def _handle_message(
@@ -855,11 +877,17 @@ async def _handle_message(
     run = session.get(OpinionRun, outbound.opinion_run_id)
     if run is None or run.status != RunStatus.AWAITING_USER.value:
         return "stale"
+    if int(reply_to) in _responses_by_message(session, run):
+        return "duplicate"
     _record_response(inbound, outbound, user_reply=text)
-    await telegram.edit_message_text(
-        chat_id,
-        int(reply_to),
-        _addressed_message_text(outbound.text or "", "Reply received"),
+    session.commit()
+    await _edit_message_text_best_effort(
+        settings=settings,
+        telegram=telegram,
+        run=run,
+        chat_id=chat_id,
+        message_id=int(reply_to),
+        text=_addressed_message_text(outbound.text or "", "Reply received"),
     )
     if _current_turn_ready(session, run):
         return await _resume_from_telegram(

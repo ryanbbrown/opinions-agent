@@ -7,6 +7,21 @@ import httpx
 from opinions_agent.agent import TelegramMessageSpec
 
 
+class TelegramAPIError(RuntimeError):
+    pass
+
+
+def _telegram_result(response: httpx.Response, operation: str) -> dict[str, Any]:
+    try:
+        data = response.json()
+    except ValueError:
+        data = {}
+    if response.is_success:
+        return data
+    description = str(data.get("description") or response.reason_phrase or "unknown error")
+    raise TelegramAPIError(f"Telegram {operation} failed with HTTP {response.status_code}: {description}")
+
+
 class TelegramClient:
     def __init__(self, token: str) -> None:
         self.token = token
@@ -28,8 +43,7 @@ class TelegramClient:
             }
         async with httpx.AsyncClient(timeout=20) as client:
             response = await client.post(f"{self.base_url}/sendMessage", json=payload)
-            response.raise_for_status()
-            data = response.json()
+            data = _telegram_result(response, "sendMessage")
         return int(data["result"]["message_id"])
 
     async def answer_callback_query(self, callback_query_id: str, text: str | None = None) -> None:
@@ -38,7 +52,7 @@ class TelegramClient:
             payload["text"] = text
         async with httpx.AsyncClient(timeout=20) as client:
             response = await client.post(f"{self.base_url}/answerCallbackQuery", json=payload)
-            response.raise_for_status()
+            _telegram_result(response, "answerCallbackQuery")
 
     async def edit_message_text(self, chat_id: int, message_id: int, text: str) -> None:
         payload: dict[str, Any] = {
@@ -50,7 +64,7 @@ class TelegramClient:
         }
         async with httpx.AsyncClient(timeout=20) as client:
             response = await client.post(f"{self.base_url}/editMessageText", json=payload)
-            response.raise_for_status()
+            _telegram_result(response, "editMessageText")
 
     async def get_updates(self, offset: int | None = None) -> list[dict[str, Any]]:
         payload: dict[str, Any] = {"timeout": 30}
@@ -58,8 +72,7 @@ class TelegramClient:
             payload["offset"] = offset
         async with httpx.AsyncClient(timeout=40) as client:
             response = await client.post(f"{self.base_url}/getUpdates", json=payload)
-            response.raise_for_status()
-            return list(response.json()["result"])
+            return list(_telegram_result(response, "getUpdates")["result"])
 
 
 class FakeTelegramClient:
