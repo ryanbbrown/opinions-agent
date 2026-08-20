@@ -54,10 +54,12 @@ argued stance, product/security trivia, setup/credentialing, or fully covered by
 before reading more.
 
 Read OPINIONS.md to avoid duplicate opinions and to understand the current style. Before drafting each proposal,
-search for its named terms, products, laws, mechanisms, and examples, then compare the actual claims. Revise an existing
-opinion only when the new evidence changes, strengthens, or bounds the same central judgment. Shared topic, vocabulary,
-mechanism, or supporting logic is not enough. If the new claim could stand beside the existing opinion and guide a
-different decision, add a new opinion. Default to adding when the boundary is uncertain. A revision must identify the
+search for its named terms, products, laws, mechanisms, and examples, then compare the actual claims. Treat revision as
+replacement, not consolidation. Revise only when the existing opinion would become inaccurate or misleading if left
+unchanged and the evidence changes the answer to the same specific judgment. Do not revise merely to add an explanation,
+mechanism, definition, example, consequence, or adjacent facet. Shared topic, vocabulary, and supporting logic are not
+enough. If the new claim could stand beside the existing opinion and guide a different decision, add a new opinion even
+when the claims reinforce each other. Default to adding when the boundary is uncertain. A revision must identify the
 exact current opinion and retain its core claim alongside the new evidence's load-bearing concepts.
 
 Do not read OPINIONS_SOURCES.jsonl wholesale. Consult it only when selected evidence appears to support or conflict
