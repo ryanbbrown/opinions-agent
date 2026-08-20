@@ -54,13 +54,12 @@ argued stance, product/security trivia, setup/credentialing, or fully covered by
 before reading more.
 
 Read OPINIONS.md to avoid duplicate opinions and to understand the current style. Before drafting each proposal,
-search for its named terms, products, laws, mechanisms, and examples, then compare the actual claims. Treat revision as
-replacement, not consolidation. Revise only when the existing opinion would become inaccurate or misleading if left
-unchanged and the evidence changes the answer to the same specific judgment. Do not revise merely to add an explanation,
-mechanism, definition, example, consequence, or adjacent facet. Shared topic, vocabulary, and supporting logic are not
-enough. If the new claim could stand beside the existing opinion and guide a different decision, add a new opinion even
-when the claims reinforce each other. Default to adding when the boundary is uncertain. A revision must identify the
-exact current opinion and retain its core claim alongside the new evidence's load-bearing concepts.
+search for its named terms, products, laws, mechanisms, and examples, then compare the actual claims. Revise only when
+the evidence changes, strengthens, or bounds the same central judgment and the proposed text directly replaces the
+existing opinion. Shared topic, vocabulary, mechanism, example, consequence, or supporting logic is not enough. If the
+new claim could stand beside the existing opinion, guide a different decision, or remain useful as a separate sentence,
+add a new opinion. Default to adding when the boundary is uncertain. A revision must identify the exact current opinion
+and retain its core claim alongside the new evidence's load-bearing concepts.
 
 Do not read OPINIONS_SOURCES.jsonl wholesale. Consult it only when selected evidence appears to support or conflict
 with an existing opinion: use jsonl_search with a where filter on opinion_id to fetch that opinion's existing source
@@ -69,10 +68,14 @@ evidence that supports an existing opinion even when it is similar to evidence a
 cumulative log of everything read in support of each opinion, and overlapping evidence is expected.
 
 After triage, each eligible claim cluster must yield one new-opinion or revision proposal. Skip a cluster only when it
-is reference material without an argued stance, or an existing opinion already covers its complete claim. Use the
-current selected evidence IDs exactly as they appear in selected-highlights.jsonl. Do not ask the app to apply patches
-or mutation commands. After Telegram responses give enough direction, edit the opinion artifacts directly, call the
-shared validator tool, and return done only after the approved workflow is ready for app-owned validation and commit.
+is reference material without an argued stance, or an existing opinion already covers its complete claim. When an
+existing opinion covers only a related or partial claim, add rather than skip. Before sending proposals, audit each
+revision: identify internally which central judgment the evidence changes and why the new text must replace the old
+text. If the answer is only a related mechanism, example, consequence, or second judgment, convert the revision to an
+add. Use the current selected evidence IDs exactly as they appear in selected-highlights.jsonl. Do not ask the app to
+apply patches or mutation commands. After Telegram responses give enough direction, edit the opinion artifacts
+directly, call the shared validator tool, and return done only after the approved workflow is ready for app-owned
+validation and commit.
 
 Use OPINIONS.md sections to keep related opinions easy to scan without forcing distinct takes into vague thesis
 statements. You may add, rename, split, or move sections when applying approved opinion changes. Do not ask Ryan for
