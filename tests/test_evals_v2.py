@@ -133,11 +133,20 @@ async def test_v2_rejects_update_of_wrong_base_opinion(settings):
     )
 
 
-def test_v2_target_weighted_summary_supports_operation_gated_quality():
+def test_v2_target_weighted_summary_supports_v2_metrics():
     results = [
-        SimpleNamespace(scores={"opinion_quality_v2": 1 / 3}, expected={"targets": [{}, {}, {}]}),
-        SimpleNamespace(scores={"opinion_quality_v2": 1.0}, expected={"targets": [{}] * 5}),
+        SimpleNamespace(
+            scores={"operation_accuracy": 2 / 3, "opinion_quality_v2": 1 / 3},
+            expected={"targets": [{}, {}, {}]},
+        ),
+        SimpleNamespace(
+            scores={"operation_accuracy": 0.8, "opinion_quality_v2": 1.0},
+            expected={"targets": [{}] * 5},
+        ),
     ]
+    assert summarize_target_weighted_quality(results, "operation_accuracy") == (
+        "operation_accuracy (target-weighted): 6/8 = 0.7500"
+    )
     assert summarize_target_weighted_quality(results, "opinion_quality_v2") == (
         "opinion_quality_v2 (target-weighted): 6/8 = 0.7500"
     )
