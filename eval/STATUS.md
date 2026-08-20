@@ -6,7 +6,21 @@ This is the current handoff for eval optimization. Rewrite it as the state chang
 
 The current best lineage is the **structural-explicitness stack** (`exp/explicit-duty` → `exp/explicit-routing`), drafter **`openai:gpt-5.6-sol` at medium effort** — Ryan dropped gpt-5.5 mid-round (2026-07-12: "no need for gpt-5.5 anymore, let's just use sol"). Scoring version **`2026-07-10-coverage-concepts`**; all comparisons via `-rs-0710f` rescores. **Precision no longer gates** (Ryan, 2026-07-12: rejecting a bad proposal is cheap; the old ≥0.50 floor is retired as a promotion criterion — still reported). **The primary quality number is the target-weighted raw fraction (x/33 per full run)**, not the Braintrust headline (Ryan, 2026-07-21): the headline is a mean of week means — one case per week, so a 3-target week weighs like a 5-target week and single-run headlines drift from the raw fraction by up to ~0.015. Braintrust's SDK caps per-case scores at 1.0, so the headline itself cannot be made target-weighted with week-cases; instead `run_opinion_eval`/`rescore_opinion_eval` now print `opinion_quality (target-weighted): x/y` after every run and rescore, and that is the number to report and compare.
 
-Full 9-week `opinion_quality`, the round's three live candidates (raw pass counts in parentheses; 33 targets/run):
+## Current Round: operation-gated quality v2 (started 2026-08-20)
+
+The historical weekly eval remains available as v1 and still owns conceptual `opinion_quality`. Eval v2 copies that path and adds deterministic operation scoring. `opinion_quality_v2` requires both conceptual coverage and the labeled operation: add targets need add proposals; update targets need a revision that identifies the canonical base opinion. V2 uses its own Braintrust dataset and scoring version, and can rescore stored outputs without regenerating them.
+
+The six clean production-method runs establish the stored-output baseline: **178/198 = 0.899 conceptual, 131/198 = 0.662 operation, and 115/198 = 0.581 V2**. The three cproxy prompt rounds were:
+
+| variant | conceptual | operation | quality V2 | proposals (add/revise) |
+| --- | --- | --- | --- | --- |
+| **`v2-routing-threshold-r1`** | **28/33** | **28/33** | **24/33 = 0.727** | 66 (55/11) |
+| `v2-revision-is-replacement-r1` | 24/33 | 28/33 | 23/33 = 0.697 | 62 (62/0) |
+| `v2-routing-audit-r1` | 22/33 | 27/33 | 21/33 = 0.636 | 73 (66/7) |
+
+Round 1 is the selected prompt state. It raises the revision threshold without suppressing revisions completely. Round 2 overcorrected to all adds, missed both labeled updates, and reduced recall and conceptual coverage. Round 3's extra audit did not help. Round 1 is a candidate, not a production promotion: it is one generation draw, and its conceptual score is below the six-run production baseline. The next useful step is unchanged round-1 replication, not more routing prose. Review ambiguous add/update labels before using V2 as a long-term optimizer, but do not change labels during a prompt comparison.
+
+Full 9-week `opinion_quality`, the prior round's three live candidates (raw pass counts in parentheses; 33 targets/run):
 
 | variant | per-run (x/33) | pooled raw | headline pooled | min | max |
 | --- | --- | --- | --- | --- | --- |
@@ -16,7 +30,7 @@ Full 9-week `opinion_quality`, the round's three live candidates (raw pass count
 
 The r5–r7 replicates (Ryan-directed floor/peak checks) sharpened the picture in both directions. Peaks: not exclusive to the no-critic variant — docscope r6 posted the lineage's **only perfect full run (33/33)**, including both chronic W13 targets. Floor: r7 dipped to a new docscope low of 28/33 = 0.848 (misses: chronic W13-02, flippy W11-02, residual W11-04, plus W10-02 and W08-04 flips — W08-04 being the very class the docscope widening targets), so docscope's min now **ties** explicit-critic's rather than beating it, staying 2 targets above the no-critic 26/33 draw. Net at n=6: docscope leads on mean and peak, ties on floor, and the early "tightest spread" claim was partly a small-n artifact — single-run σ≈0.06 noise dominates everything except the traced fix: **W12-03 has passed all seven docscope runs** (subset + 6 fulls) after failing 3 of the prior 6 sol runs. Reference anchors: gpt-5.5 on explicit-routing full 0.950 (n=1, no re-runs by directive); terra on explicit-routing 0.894/0.806 pooled 0.850 (n=2, parked — terra omits evidence IDs and quotes document summaries as "Article — null", so recall/precision are meaningless and OPINIONS_SOURCES attribution would break; needs a copy-IDs-verbatim fix before more terra runs).
 
-## Current Round: brevity / scaffolding removal (started 2026-08-09)
+## Prior Round: brevity / scaffolding removal (started 2026-08-09)
 
 Docscope proposals run **1.81x golden length**, so only 3/33 fit in a tweet against 30/33 of the goldens — which matters because Ryan wants to post these. The excess is **not** concept coverage (corr with required-concept count = -0.04); it is framing: a premise before the claim, a justification or restatement after it, and other opinions' claims reused as setup. But naive compression is not free: pooled over 6 docscope full runs, of the 12 targets that both passed and failed, the passing attempt was longer in **12/12** (mean +15.5 words).
 
@@ -56,7 +70,7 @@ Round history (variants 1–6, full entries in the ledger): the explicit duty co
 
 ## The judge
 
-`opinion_quality` is a **coverage-only** binary judge (v2). A matched proposal passes iff it expresses every required core concept for the target and takes the same stance as the canonical. The canonical is shown only as a stance reference; the judge never sees the source evidence (this killed the old evidence-bleed false negatives). Each target's checklist is `required_concepts` in `eval/opinion_targets.jsonl`, mirrored from `eval/opinion_targets.md`. Dilution/grafting is deliberately not its job — `evidence_precision` catches that deterministically. The judge is deterministic at temperature 0 (0 of 132 verdicts flipped on re-run), and it never sees the drafter model, so cross-model runs are judged identically; all run-to-run spread comes from the generations.
+V1 `opinion_quality` is a **coverage-only** binary judge. A matched proposal passes iff it expresses every required core concept for the target and takes the same stance as the canonical. The canonical is shown only as a stance reference; the judge never sees the source evidence (this killed the old evidence-bleed false negatives). Each target's checklist is `required_concepts` in `eval/opinion_targets.jsonl`, mirrored from `eval/opinion_targets.md`. Dilution/grafting is deliberately not its job — `evidence_precision` catches that deterministically. The judge is deterministic at temperature 0 (0 of 132 verdicts flipped on re-run), and it never sees the drafter model, so cross-model runs are judged identically; all run-to-run spread comes from the generations.
 
 ## Target file state
 
