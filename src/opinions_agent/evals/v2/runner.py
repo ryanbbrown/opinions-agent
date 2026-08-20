@@ -133,12 +133,10 @@ async def run_opinion_eval(
         max_concurrency=max_concurrency,
     )
     flush_braintrust_tracing()
-    summary_line = summarize_target_weighted_quality(result.results)
-    if summary_line:
-        print(summary_line)
-    v2_summary_line = summarize_target_weighted_quality(result.results, "opinion_quality_v2")
-    if v2_summary_line:
-        print(v2_summary_line)
+    for score_name in ("opinion_quality", "operation_accuracy", "opinion_quality_v2"):
+        summary_line = summarize_target_weighted_quality(result.results, score_name)
+        if summary_line:
+            print(summary_line)
     return result
 
 
@@ -211,12 +209,10 @@ async def rescore_opinion_eval(
         },
         max_concurrency=max_concurrency,
     )
-    summary_line = summarize_target_weighted_quality(result.results)
-    if summary_line:
-        print(summary_line)
-    v2_summary_line = summarize_target_weighted_quality(result.results, "opinion_quality_v2")
-    if v2_summary_line:
-        print(v2_summary_line)
+    for score_name in ("opinion_quality", "operation_accuracy", "opinion_quality_v2"):
+        summary_line = summarize_target_weighted_quality(result.results, score_name)
+        if summary_line:
+            print(summary_line)
     return result
 
 
