@@ -214,6 +214,8 @@ Opinion quality is measured by running the initial proposal phase against human-
 - EVAL-5: Eval scoring covers deterministic evidence conversion recall and precision, plus an LLM judge that grades generated opinions against the canonical opinion text and its source evidence. Judge calls route through the Braintrust proxy.
 - EVAL-6: Eval executions land in Braintrust as experiments. Dev and production agent runs land as logs in the same Braintrust project, stamped with an environment tag that defaults to `dev` locally and `prod` on Railway.
 - EVAL-7: Braintrust traces carry the same full capture detail as local traces: messages, tool arguments, and tool results.
+- EVAL-8: Eval v1 remains the historical proposal-content benchmark. Eval v2 runs the same cases and preserves the v1 quality score while also requiring each matched proposal to use the canonical add or update operation.
+- EVAL-9: Eval v2 gives operation-gated quality credit only when conceptual quality passes and the proposal adds a canonical add target or revises the canonical base opinion for an update target. It reports operation correctness separately so content and routing failures remain distinguishable.
 
 ## Decision History
 

@@ -88,6 +88,19 @@ def main(argv: list[str] | None = None) -> None:
     eval_rescore.add_argument("--from-experiment", required=True, help="Existing Braintrust experiment to re-score")
     eval_rescore.add_argument("--experiment", help="Name override; defaults to <variant>-r<run>-rs-<scoring date>")
     eval_rescore.add_argument("--max-concurrency", type=int, default=3)
+    eval_v2 = eval_subparsers.add_parser("v2")
+    eval_v2_subparsers = eval_v2.add_subparsers(dest="eval_v2_command", required=True)
+    eval_v2_run = eval_v2_subparsers.add_parser("run")
+    eval_v2_run.add_argument("--weeks", nargs="+", required=True, help="Eval week labels, such as W04 W05")
+    eval_v2_run.add_argument("--deterministic-agent", action="store_true")
+    eval_v2_run.add_argument("--variant", help="Variant name; the run is named <variant>-r<run> with cohort metadata")
+    eval_v2_run.add_argument("--run", type=int, default=1, help="Replicate number within the variant")
+    eval_v2_run.add_argument("--experiment", help="Ad-hoc Braintrust experiment name (smoke runs; no cohort metadata)")
+    eval_v2_run.add_argument("--max-concurrency", type=int, default=3)
+    eval_v2_rescore = eval_v2_subparsers.add_parser("rescore")
+    eval_v2_rescore.add_argument("--from-experiment", required=True, help="Existing Braintrust experiment to re-score")
+    eval_v2_rescore.add_argument("--experiment", help="Name override; defaults to <variant>-r<run>-rs-<scoring date>")
+    eval_v2_rescore.add_argument("--max-concurrency", type=int, default=3)
     abandon = subparsers.add_parser("abandon-run")
     abandon.add_argument("run_id")
     poll = subparsers.add_parser("telegram-poll")
@@ -307,6 +320,28 @@ async def _run(args: argparse.Namespace) -> None:
                 experiment_name=args.experiment,
                 max_concurrency=args.max_concurrency,
             )
+            print(result.summary)
+            return
+        if args.eval_command == "v2":
+            from opinions_agent.evals.v2.runner import rescore_opinion_eval, run_opinion_eval
+
+            if args.eval_v2_command == "run":
+                result = await run_opinion_eval(
+                    settings,
+                    args.weeks,
+                    deterministic=args.deterministic_agent,
+                    variant=args.variant,
+                    run=args.run,
+                    experiment_name=args.experiment,
+                    max_concurrency=args.max_concurrency,
+                )
+            else:
+                result = await rescore_opinion_eval(
+                    settings,
+                    source_experiment=args.from_experiment,
+                    experiment_name=args.experiment,
+                    max_concurrency=args.max_concurrency,
+                )
             print(result.summary)
             return
 
