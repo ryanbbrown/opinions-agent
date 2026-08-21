@@ -205,13 +205,14 @@ def build_evidence_fetch_tool(*, context: AgentReadContext):
 
 
 def build_critic_subagent(*, context: AgentReadContext):
-    from thinharness import SubAgentConfig
+    from thinharness import FilesystemPlugin, SubAgentConfig
 
     return SubAgentConfig(
         name="critic",
         description="Review one draft opinion for missing concepts from its cited evidence.",
         system_prompt=CRITIC_SYSTEM_PROMPT,
-        tools=[build_evidence_fetch_tool(context=context)],
+        plugins=(FilesystemPlugin(tools=[]),),
+        tools=(build_evidence_fetch_tool(context=context),),
     )
 
 
@@ -226,17 +227,26 @@ def build_harness_config(*, context: AgentReadContext, settings: Settings):
         model=settings.harness_model,
         effort=settings.harness_reasoning_effort,
         system_prompt=build_system_prompt(),
-        builtin_tools=["read", "search", "jsonl_search", "list", "glob", "edit", "write", "subagent"],
-        read_paths=[str(path) for path in read_paths],
-        write_paths=[str(path) for path in write_paths],
-        output_dir=str(context.run_dir / ".thinharness" / "outputs"),
         output_type=NativeOutput(AgentTurnOutput),
         output_mode="native",
-        subagents=[build_critic_subagent(context=context)],
         local_trace_dir=str(settings.local_trace_dir),
         local_tracing=settings.local_tracing_enabled,
         tracing=[tracing] if tracing is not None else [],
     )
+
+
+def build_harness_plugins(*, context: AgentReadContext):
+    from thinharness import FilesystemPlugin, SubagentsPlugin
+
+    return [
+        FilesystemPlugin(
+            tools=["read", "search", "jsonl_search", "list", "glob", "edit", "write"],
+            read_paths=[str(path) for path in context.read_paths()],
+            write_paths=[str(path) for path in context.write_paths()],
+            output_dir=str(context.run_dir / ".thinharness" / "outputs"),
+        ),
+        SubagentsPlugin(agents=[build_critic_subagent(context=context)]),
+    ]
 
 
 async def _run_harness(
@@ -249,10 +259,11 @@ async def _run_harness(
     from thinharness import Harness
 
     config = build_harness_config(context=context, settings=settings)
-    result = await Harness(config, tools=[build_validation_tool(settings=settings, run_dir=context.run_dir)]).run(
-        prompt,
-        resume_from=resume_state,
-    )
+    result = await Harness(
+        config,
+        plugins=build_harness_plugins(context=context),
+        tools=[build_validation_tool(settings=settings, run_dir=context.run_dir)],
+    ).run(prompt, resume_from=resume_state)
     output = (
         result.output
         if isinstance(result.output, AgentTurnOutput)

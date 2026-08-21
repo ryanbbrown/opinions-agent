@@ -740,7 +740,7 @@ requires-dist = [
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3" },
     { name = "pydantic", specifier = ">=2.13" },
     { name = "sqlalchemy", specifier = ">=2.0" },
-    { name = "thinharness", extras = ["tracing"], git = "https://github.com/ryanbbrown/thinharness.git?rev=v0.6.0" },
+    { name = "thinharness", extras = ["tracing"], specifier = "==0.7.0" },
     { name = "uvicorn", specifier = ">=0.38" },
 ]
 
@@ -1309,11 +1309,15 @@ wheels = [
 
 [[package]]
 name = "thinharness"
-version = "0.6.0"
-source = { git = "https://github.com/ryanbbrown/thinharness.git?rev=v0.6.0#c9ffbf52292e80488f0d5e3b8a2043c47a64a219" }
+version = "0.7.0"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
     { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/02/0d/caede9201be6bbd51395d07134b0fdaef908d765a227a76094598b973906/thinharness-0.7.0.tar.gz", hash = "sha256:2e06de7bb7eef94d14f82a2bb07b534db6cb48f0ce4dcbdb28b89898d6bd782d", size = 147135, upload-time = "2026-08-21T17:53:08.083Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5d/fd/f2fc3798f93e54bcb1d083bbfc6ab2d5f844e30ad4b4a92e64dd47011875/thinharness-0.7.0-py3-none-any.whl", hash = "sha256:404d2e3a8d593eef411498bcee2325584b0bb8500310999245068add6f90c08b", size = 135238, upload-time = "2026-08-21T17:53:06.882Z" },
 ]
 
 [package.optional-dependencies]

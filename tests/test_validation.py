@@ -11,6 +11,7 @@ from conftest import seed_corpus
 from opinions_agent.agent import (
     build_evidence_fetch_tool,
     build_harness_config,
+    build_harness_plugins,
     build_read_context,
     build_validation_tool,
 )
@@ -225,25 +226,59 @@ async def test_validation_tool_uses_shared_validator(settings: Settings, opinion
     assert "validated 2 opinions" in result.content
 
 
-def test_harness_config_uses_fixed_native_tool_surface(settings: Settings, opinions_repo: Path) -> None:
+async def test_harness_config_uses_fixed_native_tool_surface(settings: Settings, opinions_repo: Path) -> None:
+    from thinharness import Harness, PluginContext
+
     bundle = make_bundle(settings)
     context = build_read_context(settings, bundle.run_dir)
     config = build_harness_config(context=context, settings=settings)
+    plugins = build_harness_plugins(context=context)
 
-    assert config.builtin_tools == ["read", "search", "jsonl_search", "list", "glob", "edit", "write", "subagent"]
-    assert str(settings.opinions_target_path) in config.write_paths
-    assert str(settings.opinions_sources_path) in config.write_paths
-    assert str(CorpusPaths(settings.opinions_data_dir).decisions_jsonl) in config.write_paths
-    assert str((bundle.run_dir / "selected-highlights.jsonl").resolve()) in config.read_paths
-    assert str((bundle.run_dir / "selected-documents.jsonl").resolve()) in config.read_paths
-    assert str((bundle.run_dir / "review").resolve()) not in config.read_paths
     assert config.system_prompt == build_system_prompt()
     assert config.output_mode == "native"
     assert config.model == settings.harness_model
     assert config.effort == settings.harness_reasoning_effort
-    assert [subagent.name for subagent in config.subagents] == ["critic"]
-    assert config.subagents[0].builtin_tools == []
-    assert [tool.name for tool in config.subagents[0].tools] == ["get_evidence"]
+    assert [plugin.name for plugin in plugins] == ["filesystem", "subagents"]
+
+    plugin_context = PluginContext(root=Path(config.root), model=None, child_harnesses=None)
+    filesystem = plugins[0].bind(plugin_context).static
+    assert [tool.name for tool in filesystem.tools] == [
+        "read",
+        "search",
+        "jsonl_search",
+        "list",
+        "glob",
+        "edit",
+        "write",
+    ]
+    read_tool = filesystem.tools[0]
+    allowed = read_tool.handler(read_tool.parameters(path=str(context.selected_highlights_jsonl)))
+    denied = read_tool.handler(read_tool.parameters(path=str(bundle.run_dir / "review" / "summary.md")))
+    assert allowed.ok is True
+    assert denied.ok is False
+
+    critic = plugins[1].agents[0]
+    assert critic.name == "critic"
+    assert [tool.name for tool in critic.tools] == ["get_evidence"]
+    assert [plugin.name for plugin in critic.plugins] == ["filesystem"]
+    critic_filesystem = critic.plugins[0].bind(plugin_context).static
+    assert critic_filesystem.tools == ()
+    assert critic_filesystem.instructions == (f"Workspace root: {Path(config.root)}",)
+
+    validation_tool = build_validation_tool(settings=settings, run_dir=bundle.run_dir)
+    harness = Harness(config, plugins=plugins, tools=[validation_tool])
+    assert [tool.name for tool in harness.tools] == [
+        "read",
+        "search",
+        "jsonl_search",
+        "list",
+        "glob",
+        "edit",
+        "write",
+        "subagent",
+        "validate_opinion_artifacts",
+    ]
+    await harness.aclose()
     assert read_json(CorpusPaths(settings.opinions_data_dir).opinion_id_high_water, default={}) == {}
 
 
