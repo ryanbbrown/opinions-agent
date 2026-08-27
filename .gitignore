@@ -9,6 +9,7 @@ build/
 .next/
 coverage/
 .runs/
+.runs-*/
 .traces/
 .readwise/
 .worktrees/
