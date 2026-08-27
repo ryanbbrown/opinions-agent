@@ -2,6 +2,8 @@
 
 Analysis of whether a single, template-like generation procedure — anchored as closely as possible to the source material — could produce essentially the same opinion from the same highlights every run, and what that would require of the golden set. Written 2026-07-06 at Ryan's direction, from the four critic-2 pool runs (`2026-07-05-plain-language`), the judge-calibration audit, and a full provenance audit of all 33 golden opinions against the corpus.
 
+**Historical boundary:** this analysis describes the pre-2026-08-27 ground truth. W13-05 is now a standalone add, and several seed opinions and evidence assignments changed. Keep the document as experiment history, not as the current target contract.
+
 **Leakage warning:** like `eval/opinion_anatomy.md`, this file describes the test set. The generalized procedure may inform prompts; never copy per-target content, phrasing, or the per-target table below into `prompts.py` or `RULES.md`.
 
 ## The core finding

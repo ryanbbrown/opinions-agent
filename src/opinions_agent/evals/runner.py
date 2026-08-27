@@ -33,7 +33,7 @@ TARGETS_DATASET_NAME = "opinion-targets"
 # one value. Bump on any change that alters existing scores (target text, judge prompt or
 # model, scorer code); adding a new metric is not a bump — shared metrics stay comparable.
 # Always a "<YYYY-MM-DD>-<what-changed>" slug; the date prefix names rescore experiments.
-SCORING_VERSION = "2026-07-10-coverage-concepts"
+SCORING_VERSION = "2026-08-27-reviewed-ground-truth"
 
 
 def summarize_target_weighted_quality(results) -> str | None:

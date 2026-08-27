@@ -314,6 +314,7 @@ def test_target_weighted_quality_weights_targets_not_weeks():
     assert summarize_target_weighted_quality([results[2]]) is None
 
 
+@pytest.mark.skipif(not REAL_CORPUS.exists(), reason="local .readwise corpus not present")
 def test_checked_in_targets_partition_matches_corpus():
     cases = load_week_cases()
     corpus = CorpusPaths(REAL_CORPUS)
@@ -324,6 +325,98 @@ def test_checked_in_targets_partition_matches_corpus():
             assert case_target.required_sources, f"{case_target.target_id} has no required sources"
             if case_target.kind == "update":
                 assert case_target.base_opinion_id, f"{case_target.target_id} update without base_opinion_id"
+
+
+def test_checked_in_ground_truth_builds_reviewed_final_state():
+    from opinions_agent.evals.targets import WeekCase
+
+    root = Path(__file__).resolve().parents[1]
+    base = parse_opinions((root / "OPINIONS.md").read_text())
+    cases = load_week_cases(root / "eval" / "opinion_targets.jsonl")
+
+    assert [case.week for case in cases] == ["W04", "W05", "W06", "W07", "W08", "W10", "W11", "W12", "W13"]
+    assert [opinion.opinion_id for opinion in base.opinions] == [
+        f"opinion-{index:06d}" for index in range(1, 14)
+    ]
+    base_sources = [source for opinion in base.opinions for source in opinion.sources]
+    assert len(base_sources) == len(set(base_sources)) == 30
+
+    target_ids = [target.target_id for case in cases for target in case.targets]
+    assert len(target_ids) == len(set(target_ids)) == 34
+    assert sum(len(target.required_sources) for case in cases for target in case.targets) == 63
+    assert sum(len(case.not_converted) for case in cases) == 75
+
+    targets = {target.target_id: target for case in cases for target in case.targets}
+    assert targets["W04-01"].kind == "update"
+    assert targets["W04-01"].base_opinion_id == "opinion-000003"
+    assert targets["W08-05"].kind == "update"
+    assert targets["W08-05"].base_opinion_id == "opinion-000009"
+    assert targets["W12-01"].kind == "update"
+    assert targets["W12-01"].base_opinion_id == "opinion-000002"
+    assert targets["W13-05"].kind == "add"
+    assert targets["W13-05"].base_opinion_id is None
+
+    for case in cases:
+        seed = build_seed_opinions(base, cases, case.week)
+        for target in case.targets:
+            if target.kind == "update":
+                assert seed.get(target.base_opinion_id)
+
+    final_case = WeekCase(week="FINAL", targets=[], not_converted=[])
+    final = build_seed_opinions(base, [*cases, final_case], "FINAL")
+    assert [opinion.opinion_id for opinion in final.opinions] == [
+        f"opinion-{index:06d}" for index in range(1, 45)
+    ]
+    final_sources = [source for opinion in final.opinions for source in opinion.sources]
+    assert len(final_sources) == len(set(final_sources)) == 93
+
+    expected_add_id = 14
+    for case in cases:
+        for target in case.targets:
+            if target.kind == "add":
+                opinion = final.get(f"opinion-{expected_add_id:06d}")
+                assert opinion.text == target.ideal_opinion
+                assert opinion.sources == target.required_sources
+                expected_add_id += 1
+    assert expected_add_id == 45
+    assert final.get("opinion-000003").text == targets["W04-01"].ideal_opinion
+    assert final.get("opinion-000009").text == targets["W08-05"].ideal_opinion
+    assert final.get("opinion-000002").text == targets["W12-01"].ideal_opinion
+
+
+def test_checked_in_targets_markdown_is_generated_from_jsonl():
+    from opinions_agent.evals.render_targets import render_targets_markdown
+
+    root = Path(__file__).resolve().parents[1]
+    rows = [
+        json.loads(line)
+        for line in (root / "eval" / "opinion_targets.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    assert (root / "eval" / "opinion_targets.md").read_text() == render_targets_markdown(rows)
+
+
+@pytest.mark.skipif(not REAL_CORPUS.exists(), reason="local .readwise corpus not present")
+def test_checked_in_seed_uses_only_evidence_available_before_w04():
+    from datetime import datetime
+
+    from opinions_agent.sample_run import week_window_for_label
+
+    root = Path(__file__).resolve().parents[1]
+    base = parse_opinions((root / "OPINIONS.md").read_text())
+    highlights = {
+        row["highlight_id"]: row
+        for row in (
+            json.loads(line)
+            for line in (REAL_CORPUS / "highlights.jsonl").read_text().splitlines()
+            if line.strip()
+        )
+    }
+    cutoff, _ = week_window_for_label(CorpusPaths(REAL_CORPUS), "W04")
+    for opinion in base.opinions:
+        for source_id in opinion.sources:
+            highlighted_at = datetime.fromisoformat(highlights[source_id]["highlighted_at"])
+            assert highlighted_at < cutoff, f"{opinion.opinion_id} leaks future evidence {source_id}"
 
 
 async def test_run_week_case_deterministic_end_to_end(settings):

@@ -10,17 +10,19 @@ Read `eval/STATUS.md` and `eval/experiments.md` before every experiment so you s
 
 ## Metrics
 
-The eval runs the initial proposal phase for each eval week and produces five scores (see `src/opinions_agent/evals/scorers.py`):
+The V2 eval runs the initial proposal phase for each eval week and produces seven scores:
 
-- `opinion_quality` — **primary.** Binary LLM judge: a generated opinion passes only if it carries all core concepts of the canonical one; extra content is fine. Averaged across weeks that have targets.
-- `opinion_attempted` — diagnostic funnel layer beneath quality: a target counts as attempted when its matched proposal expresses the same central claim, even if concepts were dropped. Separates "wrong claims proposed" from "right claims written incompletely".
+- `opinion_quality_v2` — **primary.** A target passes only when the proposal covers the canonical concepts and uses the labeled add or update operation.
+- `opinion_quality` — conceptual component. A proposal passes when it carries all required concepts and takes the canonical stance; extra elaboration does not fail by itself.
+- `operation_accuracy` — deterministic operation component. Add targets require adds; update targets require revisions of the named base opinion.
+- `opinion_attempted` — diagnostic funnel layer beneath quality: a target counts as attempted when its matched proposal expresses the same central claim, even if concepts were dropped.
 - `evidence_recall` — guardrail. Fraction of ground-truth-converted evidence the proposals cited.
 - `evidence_precision` — guardrail. Fraction of cited in-week evidence that ground truth also converts.
-- `opinion_brevity` — reference. Mean proposal length vs the week's mean golden-target length: 1.0 at or below the golden length, lower when longer (0.5 = twice as long). Not a gate, but the golden set averages ~34 words and bloat past that register is a cost — prefer variants that hold quality at higher brevity.
+- `opinion_brevity` — reference. Mean proposal length versus the week's mean golden-target length.
 
 Weeks in scope: `W04 W05 W06 W07 W08 W10 W11 W12 W13`. W07 has no target opinions, so it only exercises precision — expect `opinion_quality` and `evidence_recall` to be null there.
 
-Under the current coverage judge (`2026-07-10-coverage-concepts`), baseline (unmodified prompts) sits at 0.562 `opinion_quality`, 0.877 recall, 0.575 precision; the historical 0.374 figure was the old binary judge. The ledger header pins the exact **score to beat**; how a variant earns promotion is defined in Validity and promotion.
+The current scoring version is `2026-08-27-reviewed-ground-truth`. The seed, canonical opinions, evidence partitions, concepts, and operation labels changed in this version, so older scores are historical only. `eval/STATUS.md` identifies the fresh baseline to run before the next prompt comparison.
 
 ## Status and ledger files
 
@@ -32,7 +34,7 @@ Under the current coverage judge (`2026-07-10-coverage-concepts`), baseline (unm
 
 - Preferred edit targets are `src/opinions_agent/prompts.py` and `RULES.md`.
 - You may edit the agent/critic harness when the experiment hypothesis requires new critic behavior, critic context, proposal routing, or coverage machinery. Keep those changes as small as possible and test prompt construction/tool behavior directly.
-- Swapping the drafter model in a worktree's `config.py` for a screen run is measurement, not an optimization lever. The promotion target model is `openai:gpt-5.5` at medium effort until Ryan explicitly decides a drafter switch.
+- Swapping the drafter model for a screen run is measurement, not an optimization lever. The production target model is `openai:gpt-5.6-sol` at medium effort.
 - Never edit `src/opinions_agent/evals/` (scorers, runner, targets), `eval/opinion_targets.*`, or `OPINIONS.md` as an experiment lever. Changing the scorer or the targets games the metric instead of improving the agent. Temporary copied scorer/runner changes inside a disposable worktree are acceptable only for measurement reliability, such as bypassing a cached malformed judge response; record that caveat in the ledger.
 
 ## Anti-leakage rules
@@ -60,18 +62,18 @@ The flip side: the levers with the best track record in the ledger are the ones 
 
 Agent runs are stochastic: the same prompt scores differently run to run (measured spread ±3–6 points on `opinion_quality`, and individual targets flip pass/fail from randomness alone). A single run cannot confirm an improvement, and small deltas are noise. Screen cheaply, confirm only what looks real:
 
-1. Screen the variant on the pinned screen subset (`eval/STATUS.md` pins the current subset weeks and per-model baselines), one run per screen model — currently gpt-5.5 medium and gpt-5.6-sol medium, named with distinct variants (`<exp>` and `<exp>-sol`) so Braintrust pooling keeps the models separate. Judge each run against its own model's subset baseline. Subset noise is coarse: one target flip in a 3-target week moves the subset mean 0.083, so treat ±0.05–0.10 as the band. If the gpt-5.5 subset run clearly regresses, stop — log it with a mechanism attribution and move on.
-2. Subset screens are breakage tripwires, not validation — the old strong-week screen flattered a failing variant twice. If the screen looks like a real gain (or a clean hold for a simplification variant), run the full 9 weeks on gpt-5.5 medium. If that run is at or above the score to beat, run two more full replicates and promote when the replicate mean beats the score to beat by more than the noise band. Per-target flips are diagnosis, not a gate: use them to understand why a variant won or lost, and accept some target churn when the mean gain is real.
-3. Consistency is a second objective: measure the spread across those runs. Prefer variants that are both higher and more stable, since clearer rules should produce more consistent behavior — a high-but-erratic variant is worse than a slightly lower, stable one.
-4. Guardrails: recall moves loosely with quality (dropped proposals surface as unmatched targets, which already hurt `opinion_quality`), so it needs no separate gate — just note big drops. Precision is the exception: extra proposals raise recall and never hurt `opinion_quality`, so precision is the only defense against proposal spam. Do not promote a variant whose replicate-mean `evidence_precision` is below 0.50.
-5. The sol screen never gates promotion by itself; it is the explicitness diagnostic. If a more capable same-cost model lags gpt-5.5 on the same prompt, the prompt is leaning on gpt-5.5-specific implicit behavior; a variant that closes sol's gap while holding gpt-5.5 is evidence the rewrite generalizes. If sol reaches parity on a winning variant, screen the cheaper 5.6 models (terra, luna) on it as a possible cost win.
+1. Establish a fresh full-run baseline on `openai:gpt-5.6-sol` medium after any ground-truth or scoring-version change.
+2. Screen a prompt variant on the subset pinned in `eval/STATUS.md`. Subset screens are breakage tripwires, not validation.
+3. If the screen holds or improves the primary V2 score, run all nine weeks. Confirm a candidate with two more full replicates before promotion.
+4. Measure both mean and spread. Prefer variants that are higher and more stable.
+5. Treat conceptual quality, operation accuracy, recall, precision, and brevity as separate diagnostics. Do not hide a regression in one component behind the combined V2 number.
 
 A variant that meaningfully simplifies the prompts while holding all scores within noise is also promotable (see Keep the prompts lean).
 
 ## Reading results
 
 - Each run prints its Braintrust experiment URL — open it for aggregate scores, per-row drill-down, and full traces.
-- In the Braintrust experiments table, filter `metadata.scoring_version = '<current version>'` to see only score-comparable experiments, and group by `metadata.variant` for pooled per-variant scores. `eval rescore` brings an older experiment's stored outputs into the current scoring version (re-judged against the live targets, named `<variant>-r<N>-rs-<date>`).
+- In the Braintrust experiments table, filter `metadata.scoring_version = '<current version>'` and group by `metadata.variant`. Use V2 rescore only when the stored outputs and current targets belong to the same ground-truth boundary; after a target correction, run a fresh baseline instead.
 - For the loop, `uv run python eval/inspect_experiment.py <run> [<run2> ...] [--vs <baseline-run> ...]` pools replicate runs of one variant — pooled means, per-run spread, per-target pass counts with the judge's missing-concept notes — and diffs them against pooled baseline runs. It reads verdicts already stored on the runs, so it never re-runs the judge.
 - Braintrust's `estimated_cost` is accurate for runs made with thinharness ≥ 0.5.1 (bumped 2026-07-05). Experiments recorded before that ignore OpenAI's prompt caching and read ~1.8x high — a full 9-week run shown as ~$10 actually cost ~$5.
 - When a run, a week, or one screen model does badly, do not stop at the aggregate: read the per-target judge notes (`inspect_experiment.py`), the Braintrust traces, and the worktree `.runs` artifacts, and attribute the failure to a mechanism — refusal (zero proposals for a week), routing (unmatched target), dropped concept, weakened paraphrase, or infra error (429 / timeout / null-week shrunken denominator; always check per-week judge coverage first). A failed screen only counts as progress if it leaves an attribution the next variant can act on.
@@ -95,7 +97,7 @@ The current best starts as `main` (the committed eval harness with unmodified pr
 6. Run the eval from the worktree, pointing at the shared corpus (the gitignored `.readwise` lives only in the main checkout) and naming the variant:
    ```
    OPINIONS_DATA_DIR=/Users/ryanbrown/code/opinions-agent/.readwise \
-   uv run --directory .worktrees/<exp> opinions-agent eval run \
+   uv run --directory .worktrees/<exp> opinions-agent eval v2 run \
      --weeks W04 W05 W06 W07 W08 W10 W11 W12 W13 \
      --variant <exp>
    ```
