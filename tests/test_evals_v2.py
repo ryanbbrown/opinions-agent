@@ -7,7 +7,7 @@ from opinions_agent.agent import TelegramButtonSpec, TelegramMessageSpec
 from opinions_agent.evals.proposals import ParsedProposal as V1ParsedProposal
 from opinions_agent.evals.v2.proposals import parse_proposals
 from opinions_agent.evals.v2.runner import summarize_target_weighted_quality
-from opinions_agent.evals.v2.scorers import make_opinion_judges
+from opinions_agent.evals.v2.scorers import make_candidate_quality_judge, make_opinion_judges
 
 
 class FakeJudgeClient:
@@ -133,17 +133,54 @@ async def test_v2_rejects_update_of_wrong_base_opinion(settings):
     )
 
 
+async def test_candidate_quality_scores_only_frozen_add_candidates(settings):
+    judge = make_candidate_quality_judge(
+        settings,
+        client=FakeJudgeClient([{"pass": True, "missing": "", "rationale": "Complete."}]),
+    )
+    add_target = target()
+    update_target = {**target(kind="update", base_text="Existing opinion."), "target_id": "W05-02"}
+    output = {
+        "week": "W05",
+        "candidates": [
+            {
+                "candidate_id": "candidate-001",
+                "section": "Agentic Software",
+                "opinion_text": "Precise design remains necessary.",
+                "evidence_ids": ["rw:a"],
+            }
+        ],
+    }
+
+    score = await judge(None, output, {"targets": [add_target, update_target], "not_converted": []})
+
+    assert score.score == 1.0
+    assert [item["target_id"] for item in score.metadata["targets"]] == ["W05-01"]
+
+
+async def test_candidate_quality_is_null_for_historical_output_without_snapshot(settings):
+    judge = make_candidate_quality_judge(settings, client=FakeJudgeClient([]))
+
+    score = await judge(None, {"week": "W05", "proposals": []}, expected(target()))
+
+    assert score.score is None
+    assert score.metadata == {"reason": "stored output has no candidate snapshot"}
+
+
 def test_v2_target_weighted_summary_supports_v2_metrics():
     results = [
         SimpleNamespace(
-            scores={"operation_accuracy": 2 / 3, "opinion_quality_v2": 1 / 3},
-            expected={"targets": [{}, {}, {}]},
+            scores={"candidate_quality": 0.5, "operation_accuracy": 2 / 3, "opinion_quality_v2": 1 / 3},
+            expected={"targets": [{"kind": "update"}, {"kind": "add"}, {"kind": "add"}]},
         ),
         SimpleNamespace(
-            scores={"operation_accuracy": 0.8, "opinion_quality_v2": 1.0},
-            expected={"targets": [{}] * 5},
+            scores={"candidate_quality": 0.75, "operation_accuracy": 0.8, "opinion_quality_v2": 1.0},
+            expected={"targets": [{"kind": "update"}, {}, {}, {}, {}]},
         ),
     ]
+    assert summarize_target_weighted_quality(results, "candidate_quality", target_kind="add") == (
+        "candidate_quality (target-weighted): 4/6 = 0.6667"
+    )
     assert summarize_target_weighted_quality(results, "operation_accuracy") == (
         "operation_accuracy (target-weighted): 6/8 = 0.7500"
     )

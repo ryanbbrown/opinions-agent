@@ -18,7 +18,16 @@ import httpx
 
 from opinions_agent.config import get_settings
 
-SCORE_KEYS = ("opinion_quality", "opinion_attempted", "evidence_recall", "evidence_precision", "opinion_brevity")
+SCORE_KEYS = (
+    "candidate_quality",
+    "opinion_quality_v2",
+    "opinion_quality",
+    "operation_accuracy",
+    "opinion_attempted",
+    "evidence_recall",
+    "evidence_precision",
+    "opinion_brevity",
+)
 
 
 def _headers(settings) -> dict:

@@ -27,19 +27,13 @@ All experiment scores from earlier scoring versions are historical only. The see
 
 The previous V2 routing candidate was `v2-routing-threshold-r1`, but its 28/33 conceptual, 28/33 operation, and 24/33 V2 results used the old ground truth. It is not the current baseline.
 
-## Next step
+## Current measurement
 
-Run a fresh nine-week V2 baseline with the production prompt state:
+V2 now stores frozen post-critic candidates and reports `candidate_quality` against add targets only. This measures extraction before consolidation. Final `opinion_quality`, `operation_accuracy`, and `opinion_quality_v2` continue to measure Telegram proposals after consolidation.
 
-```bash
-OPINIONS_DATA_DIR=/Users/ryanbrown/code/opinions-agent/.readwise \
-cproxy run --port 8113 --chains-max 500 -- \
-uv run opinions-agent eval v2 run \
-  --weeks W04 W05 W06 W07 W08 W10 W11 W12 W13 \
-  --variant corrected-golden-baseline
-```
+The W04/W06/W08 smoke scored 11/12 candidate targets = 0.917, in line with the earlier add-only full runs at 0.903 and 0.935. The same outputs scored 14/14 final conceptual quality but only 3/14 operation accuracy, proving the two stages can be diagnosed separately. A fourth smoke week, W11, failed on a provider read timeout and had no output.
 
-Record conceptual quality, operation accuracy, V2 quality, recall, precision, and brevity. Use that run as the comparison baseline for the next prompt experiment.
+Run all nine weeks before making a quality-promotion claim. A single smoke is enough only to verify the measurement path.
 
 ## Eval contract
 
@@ -48,6 +42,7 @@ Record conceptual quality, operation accuracy, V2 quality, recall, precision, an
 - One saved evidence row can have only one opinion home. Different highlights from the same article can support different opinions.
 - Every selected weekly evidence row must be either converted or not converted, never both.
 - V1 judges conceptual coverage. V2 also requires the labeled add or update operation.
+- `candidate_quality` grades the frozen post-critic candidate snapshot against add targets only; update targets are not extraction targets.
 - The primary aggregate is the target-weighted pass fraction, not the mean of week means shown as the Braintrust headline.
 
 ## Operations

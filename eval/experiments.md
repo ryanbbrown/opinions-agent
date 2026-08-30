@@ -523,3 +523,11 @@ Each entry records:
 - **Resulting contract:** 34 weekly targets produce 44 final opinions with 93 unique evidence rows. Weekly selection contains 63 converted and 75 not-converted rows. W04-01, W08-05, and W12-01 are updates; W13-05 is an add.
 - **Comparability:** Scoring version is now `2026-08-27-reviewed-ground-truth`. Every earlier score in this ledger is historical and must not be used as the current score to beat.
 - **Next:** Run a fresh full V2 baseline before evaluating another prompt variant.
+
+### pre-consolidation candidate quality metric and smoke (2026-08-30)
+
+- **Eval change:** V2 now stores the frozen post-critic `candidate-opinions.jsonl` rows in Braintrust output and reports `candidate_quality`. The existing conceptual judge grades those candidates against add targets only; update targets remain a separate reconciliation concern. Final proposal metrics are unchanged.
+- **Smoke:** `candidate-quality-smoke-20260830-r1` attempted W04, W06, W08, and W11. W11 hit a provider read timeout before producing output, leaving three valid weeks and 12 add targets.
+- **Candidate quality:** **11/12 = 0.917**: W04 4/4, W06 3/4, W08 4/4. W06-01 failed only because the draft did not explicitly carry the checklist judgment that Figma is in an awkward position. This is in line with the two earlier add-only full runs, 28/31 = 0.903 and 29/31 = 0.935.
+- **Final-stage diagnostic:** The same three generations scored 14/14 conceptual quality but only 3/14 operation accuracy and V2 quality. The new metric therefore separates healthy extraction from poor consolidation instead of allowing final routing to obscure candidate quality.
+- **Verdict:** The measurement path works and the smoke shows no candidate-quality regression from adding consolidation instructions. This is a small single sample; use a complete full run before making a quality-promotion claim.

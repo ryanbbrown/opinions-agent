@@ -18,7 +18,14 @@ from opinions_agent.evals.targets import (
     verify_week_partition,
 )
 from opinions_agent.evals.v2.proposals import parse_proposals
-from opinions_agent.evals.v2.scorers import evidence_precision, evidence_recall, make_opinion_judges, opinion_brevity
+from opinions_agent.evals.v2.scorers import (
+    evidence_precision,
+    evidence_recall,
+    make_candidate_quality_judge,
+    make_opinion_judges,
+    opinion_brevity,
+)
+from opinions_agent.fsio import read_jsonl
 from opinions_agent.opinions_doc import OpinionsDocument, load_opinions
 from opinions_agent.sample_run import prepare_sample_settings, sample_run_id, week_window_for_label
 from opinions_agent.selection import select_run_highlights
@@ -36,17 +43,19 @@ TARGETS_DATASET_NAME = "opinion-targets-v2"
 SCORING_VERSION = "2026-08-27-reviewed-ground-truth"
 
 
-def summarize_target_weighted_quality(results, score_name: str = "opinion_quality") -> str | None:
-    """Aggregate one opinion quality score weighting every target equally, for the end-of-run summary line.
-
-    The Braintrust experiment headline is a mean of week means (one case per week), so a
-    3-target week weighs the same as a 5-target week and the headline drifts from the raw
-    pass fraction. This target-weighted number is the primary quality metric for reporting.
-    """
+def summarize_target_weighted_quality(
+    results,
+    score_name: str = "opinion_quality",
+    *,
+    target_kind: str | None = None,
+) -> str | None:
+    """Aggregate one quality score weighting every eligible target equally."""
     passed = total = 0
     for result in results:
         score = (result.scores or {}).get(score_name)
         targets = (result.expected or {}).get("targets") or []
+        if target_kind is not None:
+            targets = [target for target in targets if target.get("kind", "add") == target_kind]
         if score is None or not targets:
             continue
         passed += round(score * len(targets))
@@ -100,6 +109,7 @@ async def run_opinion_eval(
             parent=_current_parent(),
         )
 
+    candidate_quality = make_candidate_quality_judge(settings)
     opinion_quality, opinion_attempted, operation_accuracy, opinion_quality_v2 = make_opinion_judges(settings)
     result = await EvalAsync(
         EVAL_PROJECT_NAME,
@@ -115,6 +125,7 @@ async def run_opinion_eval(
             evidence_recall,
             evidence_precision,
             opinion_brevity,
+            candidate_quality,
             opinion_quality,
             opinion_attempted,
             operation_accuracy,
@@ -133,8 +144,12 @@ async def run_opinion_eval(
         max_concurrency=max_concurrency,
     )
     flush_braintrust_tracing()
-    for score_name in ("opinion_quality", "operation_accuracy", "opinion_quality_v2"):
-        summary_line = summarize_target_weighted_quality(result.results, score_name)
+    for score_name in ("candidate_quality", "opinion_quality", "operation_accuracy", "opinion_quality_v2"):
+        summary_line = summarize_target_weighted_quality(
+            result.results,
+            score_name,
+            target_kind="add" if score_name == "candidate_quality" else None,
+        )
         if summary_line:
             print(summary_line)
     return result
@@ -179,6 +194,7 @@ async def rescore_opinion_eval(
     async def task(input: dict) -> dict:
         return outputs_by_week[input["week"]]
 
+    candidate_quality = make_candidate_quality_judge(settings)
     opinion_quality, opinion_attempted, operation_accuracy, opinion_quality_v2 = make_opinion_judges(settings)
     result = await EvalAsync(
         EVAL_PROJECT_NAME,
@@ -194,6 +210,7 @@ async def rescore_opinion_eval(
             evidence_recall,
             evidence_precision,
             opinion_brevity,
+            candidate_quality,
             opinion_quality,
             opinion_attempted,
             operation_accuracy,
@@ -209,8 +226,12 @@ async def rescore_opinion_eval(
         },
         max_concurrency=max_concurrency,
     )
-    for score_name in ("opinion_quality", "operation_accuracy", "opinion_quality_v2"):
-        summary_line = summarize_target_weighted_quality(result.results, score_name)
+    for score_name in ("candidate_quality", "opinion_quality", "operation_accuracy", "opinion_quality_v2"):
+        summary_line = summarize_target_weighted_quality(
+            result.results,
+            score_name,
+            target_kind="add" if score_name == "candidate_quality" else None,
+        )
         if summary_line:
             print(summary_line)
     return result
@@ -307,15 +328,26 @@ async def run_week_case(
             run_id=run_id,
         )
     if run is None:
-        return {"week": case.week, "run_id": run_id, "status": "no_evidence", "proposals": [], "messages": []}
+        return {
+            "week": case.week,
+            "run_id": run_id,
+            "status": "no_evidence",
+            "candidates": [],
+            "proposals": [],
+            "messages": [],
+        }
     messages = [spec for _, spec in telegram.sent]
+    run_dir = sample_settings.runs_dir / "active" / run_id
+    candidate_path = run_dir / "candidate-opinions.jsonl"
+    candidates = read_jsonl(candidate_path) if candidate_path.is_file() else []
     return {
         "week": case.week,
         "run_id": run_id,
         "status": run.status,
+        "candidates": candidates,
         "proposals": [proposal.model_dump() for proposal in parse_proposals(messages)],
         "messages": [spec.text for spec in messages],
-        "run_dir": str(sample_settings.runs_dir / "active" / run_id),
+        "run_dir": str(run_dir),
     }
 
 

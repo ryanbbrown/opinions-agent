@@ -139,6 +139,41 @@ def opinion_brevity(input: Any, output: Any, expected: Any) -> Score:
     )
 
 
+def make_candidate_quality_judge(settings: Settings, *, model: str = JUDGE_MODEL, client: Any = None):
+    """Grade frozen post-critic candidates against add targets before consolidation."""
+    conceptual_quality, _, _, _ = make_opinion_judges(settings, model=model, client=client)
+
+    async def candidate_quality(input: Any, output: Any, expected: Any) -> Score:
+        if "candidates" not in output:
+            return Score(
+                name="candidate_quality",
+                score=None,
+                metadata={"reason": "stored output has no candidate snapshot"},
+            )
+        add_targets = [target for target in expected["targets"] if target.get("kind", "add") == "add"]
+        if not add_targets:
+            return Score(name="candidate_quality", score=None, metadata={"reason": "no add targets this week"})
+        proposals = [
+            {
+                "proposal_id": candidate["candidate_id"],
+                "kind": "add",
+                "section": candidate["section"],
+                "opinion_text": candidate["opinion_text"],
+                "evidence_ids": candidate["evidence_ids"],
+                "message_text": candidate["opinion_text"],
+            }
+            for candidate in output["candidates"]
+        ]
+        score = await conceptual_quality(
+            input,
+            {"week": output.get("week"), "proposals": proposals},
+            {**expected, "targets": add_targets},
+        )
+        return Score(name="candidate_quality", score=score.score, metadata=score.metadata)
+
+    return candidate_quality
+
+
 def make_opinion_judges(settings: Settings, *, model: str = JUDGE_MODEL, client: Any = None):
     """Build conceptual, attempted, operation, and operation-gated quality scorers over one shared evaluation."""
     if client is None:

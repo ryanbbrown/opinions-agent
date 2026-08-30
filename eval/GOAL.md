@@ -10,9 +10,10 @@ Read `eval/STATUS.md` and `eval/experiments.md` before every experiment so you s
 
 ## Metrics
 
-The V2 eval runs the initial proposal phase for each eval week and produces seven scores:
+The V2 eval runs the initial proposal phase for each eval week and produces eight scores:
 
-- `opinion_quality_v2` — **primary.** A target passes only when the proposal covers the canonical concepts and uses the labeled add or update operation.
+- `opinion_quality_v2` — **primary.** A target passes only when the final proposal covers the canonical concepts and uses the labeled add or update operation.
+- `candidate_quality` — pre-consolidation diagnostic. The existing conceptual judge grades the frozen post-critic candidate snapshot against add targets only. Update targets are excluded because extraction has not yet read the existing opinion needed to draft the final revision.
 - `opinion_quality` — conceptual component. A proposal passes when it carries all required concepts and takes the canonical stance; extra elaboration does not fail by itself.
 - `operation_accuracy` — deterministic operation component. Add targets require adds; update targets require revisions of the named base opinion.
 - `opinion_attempted` — diagnostic funnel layer beneath quality: a target counts as attempted when its matched proposal expresses the same central claim, even if concepts were dropped.
@@ -66,7 +67,7 @@ Agent runs are stochastic: the same prompt scores differently run to run (measur
 2. Screen a prompt variant on the subset pinned in `eval/STATUS.md`. Subset screens are breakage tripwires, not validation.
 3. If the screen holds or improves the primary V2 score, run all nine weeks. Confirm a candidate with two more full replicates before promotion.
 4. Measure both mean and spread. Prefer variants that are higher and more stable.
-5. Treat conceptual quality, operation accuracy, recall, precision, and brevity as separate diagnostics. Do not hide a regression in one component behind the combined V2 number.
+5. Treat candidate quality, final conceptual quality, operation accuracy, recall, precision, and brevity as separate diagnostics. Do not hide an extraction or consolidation regression behind the combined V2 number.
 
 A variant that meaningfully simplifies the prompts while holding all scores within noise is also promotable (see Keep the prompts lean).
 
