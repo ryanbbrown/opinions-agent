@@ -52,6 +52,9 @@ Each opinion run deterministically selects the evidence window, writes an inspec
 - RUN-6: A created run writes an active run bundle under `RUNS_DIR/active/<run_id>/`.
 - RUN-7: The active run bundle contains `selected-highlights.jsonl`, `selected-documents.jsonl`, and a `review/` directory for human-readable review artifacts.
 - RUN-7A: `selected-highlights.jsonl` is the selected evidence file. It may contain Reader highlights, document-level notes, and synthesized tagged document-summary evidence with IDs using the `reader-summary:<reader_id>` form.
+- RUN-7B: The main agent writes independent opinion candidates to `candidate-opinions.jsonl` in the active run directory before comparing them with existing opinions. Each selected evidence item can support at most one candidate.
+- RUN-7C: Candidate files are temporary run working state. They do not create a recovery checkpoint; a failed-run retry recreates them through a new extraction attempt.
+- RUN-7D: The candidate file freezes as an immutable post-critic extraction snapshot after critic validation. Full consolidation does not delete its candidate row, and partial consolidation does not remove evidence from its candidate row.
 - RUN-8: Human review artifacts include the run summary and initial Telegram message transcript; they are for inspection and are not part of the agent read surface.
 - RUN-9: The agent read surface includes selected run evidence files, corpus indexes, readable document content, memory files, current opinion files, opinion provenance files, and agent-maintained decision context.
 - RUN-10: Raw Reader payloads, old run directories, git internals, human review artifacts, and app state files are excluded from the default agent read surface.
@@ -96,8 +99,10 @@ An opinion run is handled as one resumable agent conversation with one bounded t
 - AGENT-7: The app must not commit artifact edits until the agent returns `done`, the same shared validator passes at the commit boundary, and commit/no-op handling succeeds.
 - AGENT-8: If the agent cannot make progress without manual intervention, it returns `blocked`; the app records a terminal blocked or failed run state, sends the explanatory Telegram message, preserves active artifacts for inspection, and does not validate or commit.
 - AGENT-9: A successful `done` run sends a final Telegram completion message after validation and commit/no-op handling. If the agent does not provide one, the app sends a deterministic fallback summary of opinion and evidence row changes.
-- AGENT-10: The agent runs one fidelity critic for each proposed opinion before it sends proposals.
-- AGENT-11: The critic can read cited rows and fixed same-document context. It cannot inspect unrelated documents or edit artifacts.
+- AGENT-10: The agent runs the existing omission-only fidelity critic once for each saved candidate before consolidation. Each critic loads its candidate by ID and can read its cited rows and fixed same-document context, but cannot inspect unrelated documents or edit artifacts.
+- AGENT-11: After critic feedback is applied, one read-only consolidator call checks each candidate against current opinions and provenance. It returns either `null` to keep the complete candidate new and unchanged, or one existing opinion with complete revised text and a non-empty subset of candidate evidence to move there.
+- AGENT-12: Evidence moved by consolidation belongs only to the named existing opinion proposal. Evidence not moved supports only the residual add proposal. After a partial consolidation, the main agent authors that residual proposal around the remaining evidence without a second critic call or a candidate-file edit.
+- AGENT-13: The same main agent conversation owns candidate writing, critic edits, residual proposal writing, Telegram discussion, feedback, and approved durable edits. Consolidators cannot edit files or send Telegram messages.
 
 ## Proposal And Editing Workflow
 
@@ -116,6 +121,8 @@ The agent proposes conceptual opinion changes and gets human approval or revisio
 - PROPOSAL-7: The app provides the shared deterministic artifact validator to the agent as a tool. The agent must successfully validate durable opinion edits before returning `done`.
 - PROPOSAL-8: The shared validator is not an editor. It does not normalize, deduplicate, allocate IDs, repair comments, or otherwise rewrite agent-edited artifacts.
 - PROPOSAL-9: A run with no opinion-worthy changes may complete with `status="done"` and no artifact commit.
+- PROPOSAL-10: Existing opinions do not suppress extraction of independent candidates. A `null` consolidation keeps the candidate text and all its evidence for an add proposal; a full consolidation leaves only a revise-existing proposal; a partial consolidation leaves both a revise-existing proposal and a rewritten add proposal supported by the remaining evidence. Full and partial routing changes only proposal text and conversation state; the frozen candidate snapshot stays unchanged.
+- PROPOSAL-11: The main agent authors all Telegram proposal text and decides how to use advisory consolidation output. No deterministic renderer applies consolidation results.
 
 ## Telegram Approval
 

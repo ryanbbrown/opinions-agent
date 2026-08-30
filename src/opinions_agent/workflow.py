@@ -178,6 +178,7 @@ async def start_opinion_run(
         "review_summary_md": str(bundle.review_summary_md),
         "selected_highlights_jsonl": str(bundle.selected_highlights_jsonl),
         "selected_documents_jsonl": str(bundle.selected_documents_jsonl),
+        "candidate_opinions_jsonl": str(bundle.run_dir / "candidate-opinions.jsonl"),
     }
     capture_run_baseline(settings, run, bundle.run_dir)
     session.commit()
@@ -228,6 +229,7 @@ async def start_materialized_opinion_run(
             "review_summary_md": str(Path(batch.bundle_path) / "review" / "summary.md"),
             "selected_highlights_jsonl": str(Path(batch.bundle_path) / "selected-highlights.jsonl"),
             "selected_documents_jsonl": str(Path(batch.bundle_path) / "selected-documents.jsonl"),
+            "candidate_opinions_jsonl": str(Path(batch.bundle_path) / "candidate-opinions.jsonl"),
         },
     )
     session.add(run)
@@ -356,7 +358,10 @@ async def _execute_claimed_turn(
     run: OpinionRun,
     prompt_fragment: str | None,
 ) -> None:
-    context = build_read_context(settings, _run_dir(run, settings))
+    run_dir = _run_dir(run, settings)
+    if prompt_fragment is None and run.turn_seq == 0:
+        (run_dir / "candidate-opinions.jsonl").unlink(missing_ok=True)
+    context = build_read_context(settings, run_dir)
     output, resume_state = await agent.run_turn(
         run_id=run.id,
         context=context,

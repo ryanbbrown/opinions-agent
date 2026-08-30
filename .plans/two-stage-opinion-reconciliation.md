@@ -32,7 +32,7 @@ The candidate file is run-scoped working state, not a durable checkpoint or opin
 
 The main agent calls the existing fidelity critic once per candidate. Each critic call names a candidate ID. The critic reads that candidate from the temporary file, fetches its cited evidence and fixed same-document context, and returns `READY` or `REVISE` with missing concepts.
 
-The main agent applies critic feedback by editing the candidate file. There is no second critic call after consolidation.
+The main agent applies critic feedback by editing only candidate opinion text, then validates the file again. That validation freezes `candidate-opinions.jsonl` as the immutable post-critic extraction snapshot. Consolidation does not mutate or delete its rows. There is no second critic call after consolidation.
 
 ### 3. Run the consolidator
 
@@ -63,7 +63,7 @@ A non-null response must:
 - provide the complete resulting existing opinion text;
 - list the candidate evidence IDs that move to that existing opinion.
 
-The returned evidence IDs must be a non-empty subset of the candidate's evidence IDs. Existing evidence already attached to the opinion remains attached and does not need to be repeated. Candidate evidence absent from the response stays with the new candidate. If every candidate evidence ID is returned, no new-opinion proposal remains. If only some are returned, the main agent rewrites the new candidate around its remaining evidence.
+The returned evidence IDs must be a non-empty subset of the candidate's evidence IDs. Existing evidence already attached to the opinion remains attached and does not need to be repeated. Candidate evidence absent from the response stays with the new proposal. If every candidate evidence ID is returned, no new-opinion proposal remains. If only some are returned, the main agent authors residual proposal text around the remaining evidence. These decisions affect only conversation state and proposal routing; the frozen candidate row stays unchanged.
 
 The consolidator has no other actions. It cannot discard evidence, create a different new opinion, target several existing opinions from one call, remove an opinion, split an opinion, reorder opinions, or edit files. If an existing opinion already expresses the moved evidence fully, the consolidator may return its current text unchanged.
 
@@ -72,10 +72,10 @@ The consolidator has no other actions. It cannot discard evidence, create a diff
 The main agent writes Telegram messages as it does now:
 
 - A `null` consolidator response becomes an add-opinion proposal using the candidate's existing text and evidence.
-- A full consolidation becomes one revise-existing-opinion proposal and removes the new candidate.
-- A partial consolidation becomes one revise-existing-opinion proposal plus a rewritten add-opinion proposal supported only by the evidence that remains.
+- A full consolidation becomes one revise-existing-opinion proposal and removes the candidate only from the proposal set, not from `candidate-opinions.jsonl`.
+- A partial consolidation becomes one revise-existing-opinion proposal plus a rewritten add-opinion proposal supported only by the evidence that remains; its saved candidate row and evidence list stay unchanged.
 
-The main agent owns the residual candidate rewrite without another critic call. Telegram remains agent-authored. The main agent can ask ordinary questions, explain a recommendation, respond to feedback, and reword proposals. The consolidator output is advisory input, not an immutable instruction that later messages must copy byte for byte.
+The main agent owns the residual proposal rewrite without another critic call. Telegram remains agent-authored. The main agent can ask ordinary questions, explain a recommendation, respond to feedback, and reword proposals. The consolidator output is advisory input, not an immutable instruction that later messages must copy byte for byte.
 
 User callbacks and replies resume the same main agent conversation. Only after approval does the main agent edit `OPINIONS.md`, `OPINIONS_SOURCES.jsonl`, and decision context. Existing validation, commit, push, and recovery behavior remains unchanged.
 
@@ -83,7 +83,7 @@ User callbacks and replies resume the same main agent conversation. Only after a
 
 ### Run-scoped candidate workspace
 
-Use `run_dir/candidate-opinions.jsonl` inside the existing active run directory. Grant the main agent write access to that file and grant the critic and consolidator read-only access.
+Use `run_dir/candidate-opinions.jsonl` inside the existing active run directory. Grant the main agent write access for extraction and critic edits, and grant the critic and consolidator read-only access. After post-critic validation, the main agent treats the file as frozen; consolidation outcomes live only in conversation state and proposal text.
 
 Do not add a new temporary-directory lifecycle or checkpoint recovery. Existing failed-run handling remains unchanged, and a retry reruns extraction and recreates the file.
 
@@ -104,8 +104,8 @@ Update the prompt and tool instructions to enforce this order:
 1. write all candidates;
 2. call one fidelity critic per candidate;
 3. apply feedback to the candidate file;
-4. call one consolidator per candidate in parallel;
-5. rewrite any partially consolidated candidates around their remaining evidence;
+4. freeze the post-critic candidate file and call one consolidator per candidate in parallel;
+5. author residual proposal text for partial consolidations without changing the candidate snapshot;
 6. write Telegram proposals;
 7. resume after responses and apply approved durable edits.
 
@@ -162,7 +162,7 @@ Verification:
 - Add a typed nullable consolidation response model.
 - Add the read-only consolidator subagent and call it once per candidate in parallel.
 - Validate existing opinion IDs and require returned evidence IDs to be a non-empty subset of the scoped candidate's evidence.
-- Update the main prompt to keep `null` candidates new, remove fully consolidated candidates, and rewrite partially consolidated candidates around remaining evidence.
+- Update the main prompt to keep `null` candidates new, omit fully consolidated candidates from add proposals, and author partial residual proposal text around remaining evidence without changing the frozen candidate snapshot.
 
 Verification:
 

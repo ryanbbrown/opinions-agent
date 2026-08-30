@@ -7,17 +7,24 @@ from pathlib import Path
 
 import pytest
 from conftest import seed_corpus
+from pydantic import ValidationError
 
+import opinions_agent.agent as agent_module
 from opinions_agent.agent import (
+    build_candidate_validation_tool,
+    build_consolidation_context_tool,
+    build_consolidation_output_type,
+    build_consolidation_validation_tool,
     build_evidence_fetch_tool,
     build_harness_config,
     build_harness_plugins,
+    build_opinion_sources_tool,
     build_read_context,
     build_validation_tool,
 )
 from opinions_agent.config import Settings
 from opinions_agent.corpus import CorpusPaths, DocumentRow, upsert_documents
-from opinions_agent.fsio import read_json, write_json_atomic
+from opinions_agent.fsio import read_json, write_json_atomic, write_jsonl_atomic
 from opinions_agent.opinions_doc import OpinionsDocError
 from opinions_agent.prompts import build_system_prompt
 from opinions_agent.selection import RunPaths, select_run_highlights, write_run_bundle
@@ -259,14 +266,33 @@ async def test_harness_config_uses_fixed_native_tool_surface(settings: Settings,
 
     critic = plugins[1].agents[0]
     assert critic.name == "critic"
-    assert [tool.name for tool in critic.tools] == ["get_evidence"]
+    assert [tool.name for tool in critic.tools] == ["get_candidate_evidence"]
     assert [plugin.name for plugin in critic.plugins] == ["filesystem"]
     critic_filesystem = critic.plugins[0].bind(plugin_context).static
     assert critic_filesystem.tools == ()
     assert critic_filesystem.instructions == (f"Workspace root: {Path(config.root)}",)
 
-    validation_tool = build_validation_tool(settings=settings, run_dir=bundle.run_dir)
-    harness = Harness(config, plugins=plugins, tools=[validation_tool])
+    consolidator = plugins[1].agents[1]
+    assert consolidator.name == "consolidator"
+    assert [tool.name for tool in consolidator.tools] == ["get_candidate_context", "get_opinion_sources"]
+    consolidator_filesystem = consolidator.plugins[0].bind(plugin_context).static
+    assert consolidator_filesystem.tools == ()
+    assert consolidator.output_mode == "native"
+    consolidation_schema = build_consolidation_output_type(context).model_json_schema()
+    schema_text = json.dumps(consolidation_schema)
+    assert "opinion-000001" in schema_text
+    assert "opinion-000002" in schema_text
+    assert "opinion-000000" not in schema_text
+
+    harness = Harness(
+        config,
+        plugins=plugins,
+        tools=[
+            build_candidate_validation_tool(context=context),
+            build_consolidation_validation_tool(context=context),
+            build_validation_tool(settings=settings, run_dir=bundle.run_dir),
+        ],
+    )
     assert [tool.name for tool in harness.tools] == [
         "read",
         "search",
@@ -276,22 +302,212 @@ async def test_harness_config_uses_fixed_native_tool_surface(settings: Settings,
         "edit",
         "write",
         "subagent",
+        "validate_candidates",
+        "validate_consolidation",
         "validate_opinion_artifacts",
     ]
     await harness.aclose()
     assert read_json(CorpusPaths(settings.opinions_data_dir).opinion_id_high_water, default={}) == {}
 
 
-async def test_critic_evidence_tool_rejects_uncited_rows(settings: Settings, opinions_repo: Path) -> None:
+def test_empty_opinion_set_allows_only_null_consolidator_output(
+    settings: Settings,
+    opinions_repo: Path,
+) -> None:
     bundle = make_bundle(settings)
     context = build_read_context(settings, bundle.run_dir)
+    context.opinions_md.write_text("# OPINIONS\n", encoding="utf-8")
+    output_type = build_consolidation_output_type(context)
+
+    assert output_type.model_validate_json("null").root is None
+    with pytest.raises(ValidationError):
+        output_type.model_validate_json(
+            json.dumps(
+                {
+                    "existing_opinion_id": "opinion-000001",
+                    "opinion_text": "No current opinion can be targeted.",
+                    "evidence_ids": ["rw:h0"],
+                }
+            )
+        )
+
+
+async def test_consolidator_context_tools_return_current_read_only_context(
+    settings: Settings,
+    opinions_repo: Path,
+) -> None:
+    bundle = make_bundle(settings)
+    context = build_read_context(settings, bundle.run_dir)
+    write_jsonl_atomic(
+        context.candidate_opinions_jsonl,
+        [
+            {
+                "candidate_id": "candidate-001",
+                "section": "Agentic Software",
+                "opinion_text": "A saved candidate.",
+                "evidence_ids": ["rw:h0"],
+            }
+        ],
+    )
+
+    candidate_tool = build_consolidation_context_tool(context=context)
+    candidate_result = await candidate_tool.handler(candidate_tool.parameters(candidate_id="candidate-001"))
+    sources_tool = build_opinion_sources_tool(context=context)
+    sources_result = await sources_tool.handler(sources_tool.parameters(opinion_id="opinion-000001"))
+
+    assert candidate_result.ok is True
+    candidate_payload = json.loads(candidate_result.content)
+    assert candidate_payload["candidate"]["opinion_text"] == "A saved candidate."
+    assert "opinion-000001" in candidate_payload["current_opinions_markdown"]
+    assert sources_result.ok is True
+    assert json.loads(sources_result.content)[0]["opinion_id"] == "opinion-000001"
+
+
+async def test_critic_evidence_tool_loads_current_saved_candidate_by_id(
+    settings: Settings,
+    opinions_repo: Path,
+) -> None:
+    bundle = make_bundle(settings)
+    context = build_read_context(settings, bundle.run_dir)
+    write_jsonl_atomic(
+        context.candidate_opinions_jsonl,
+        [
+            {
+                "candidate_id": "candidate-001",
+                "section": "Agentic Software",
+                "opinion_text": "The first saved version.",
+                "evidence_ids": ["rw:h0"],
+            }
+        ],
+    )
     tool = build_evidence_fetch_tool(context=context)
 
-    result = await tool.handler(tool.parameters(evidence_ids=["rw:h0", "rw:not-selected"]))
+    first = await tool.handler(tool.parameters(candidate_id="candidate-001"))
+    context.candidate_opinions_jsonl.write_text(
+        json.dumps(
+            {
+                "candidate_id": "candidate-001",
+                "section": "Agentic Software",
+                "opinion_text": "The critic must see this edited version.",
+                "evidence_ids": ["rw:h1"],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    edited = await tool.handler(tool.parameters(candidate_id="candidate-001"))
+
+    assert first.ok is True
+    assert "The first saved version." in first.content
+    assert "rw:h0" in first.content
+    assert edited.ok is True
+    assert "The critic must see this edited version." in edited.content
+    assert "rw:h1" in edited.content
+    assert "The first saved version." not in edited.content
+
+
+async def test_critic_evidence_tool_normalizes_selected_evidence_ids(
+    settings: Settings,
+    opinions_repo: Path,
+) -> None:
+    bundle = make_bundle(settings)
+    context = build_read_context(settings, bundle.run_dir)
+    selected = agent_module.read_jsonl(context.selected_highlights_jsonl)
+    selected[0]["highlight_id"] = 123
+    write_jsonl_atomic(context.selected_highlights_jsonl, selected)
+    write_jsonl_atomic(
+        context.candidate_opinions_jsonl,
+        [
+            {
+                "candidate_id": "candidate-001",
+                "section": "Agentic Software",
+                "opinion_text": "A candidate with a numeric source ID.",
+                "evidence_ids": ["123"],
+            }
+        ],
+    )
+    tool = build_evidence_fetch_tool(context=context)
+
+    result = await tool.handler(tool.parameters(candidate_id="candidate-001"))
 
     assert result.ok is True
-    assert "Resolved 1 of 2" in result.content
-    assert "rw:not-selected" in result.content
+    assert "123" in result.content
+
+
+async def test_critic_evidence_tool_reports_evidence_missing_after_candidate_lookup(
+    settings: Settings,
+    opinions_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = make_bundle(settings)
+    context = build_read_context(settings, bundle.run_dir)
+    write_jsonl_atomic(
+        context.candidate_opinions_jsonl,
+        [
+            {
+                "candidate_id": "candidate-001",
+                "section": "Agentic Software",
+                "opinion_text": "A candidate whose selected evidence disappears.",
+                "evidence_ids": ["rw:h0"],
+            }
+        ],
+    )
+    original_read_jsonl = agent_module.read_jsonl
+    selected_reads = 0
+
+    def read_jsonl_with_missing_second_read(path: Path) -> list[dict]:
+        nonlocal selected_reads
+        if path == context.selected_highlights_jsonl:
+            selected_reads += 1
+            if selected_reads == 2:
+                return []
+        return original_read_jsonl(path)
+
+    monkeypatch.setattr(agent_module, "read_jsonl", read_jsonl_with_missing_second_read)
+    tool = build_evidence_fetch_tool(context=context)
+
+    result = await tool.handler(tool.parameters(candidate_id="candidate-001"))
+
+    assert result.ok is False
+    assert result.content == (
+        "candidate candidate-001 cites evidence missing from selected run: rw:h0"
+    )
+
+
+async def test_critic_evidence_tool_rejects_missing_candidate_id(settings: Settings, opinions_repo: Path) -> None:
+    bundle = make_bundle(settings)
+    context = build_read_context(settings, bundle.run_dir)
+    context.candidate_opinions_jsonl.write_text("", encoding="utf-8")
+    tool = build_evidence_fetch_tool(context=context)
+
+    result = await tool.handler(tool.parameters(candidate_id="candidate-999"))
+
+    assert result.ok is False
+    assert "candidate ID not found: candidate-999" in result.content
+
+
+async def test_critic_evidence_tool_rejects_duplicate_candidate_ids(
+    settings: Settings,
+    opinions_repo: Path,
+) -> None:
+    bundle = make_bundle(settings)
+    context = build_read_context(settings, bundle.run_dir)
+    row = {
+        "candidate_id": "candidate-001",
+        "section": "Agentic Software",
+        "opinion_text": "Duplicate candidate.",
+        "evidence_ids": ["rw:h0"],
+    }
+    write_jsonl_atomic(
+        context.candidate_opinions_jsonl,
+        [row, {**row, "opinion_text": "Another duplicate.", "evidence_ids": ["rw:h1"]}],
+    )
+    tool = build_evidence_fetch_tool(context=context)
+
+    result = await tool.handler(tool.parameters(candidate_id="candidate-001"))
+
+    assert result.ok is False
+    assert "duplicate candidate ID: candidate-001" in result.content
 
 
 def selected_source_row(run_dir: Path, opinion_id: str, evidence_id: str) -> dict:

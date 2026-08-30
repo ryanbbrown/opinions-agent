@@ -28,6 +28,7 @@ def test_turn_prompt_separates_initial_run_context_from_resume_context(tmp_path)
         run_summary="# Opinion run run-1\n\nSelected highlights: 2",
         selected_highlights_jsonl=tmp_path / "runs" / "active" / "run-1" / "selected-highlights.jsonl",
         selected_documents_jsonl=tmp_path / "runs" / "active" / "run-1" / "selected-documents.jsonl",
+        candidate_opinions_jsonl=tmp_path / "runs" / "active" / "run-1" / "candidate-opinions.jsonl",
         opinions_md=tmp_path / "opinions" / "OPINIONS.md",
         sources_jsonl=tmp_path / "opinions" / "OPINIONS_SOURCES.jsonl",
         decisions_jsonl=tmp_path / "data" / "opinion-decisions.jsonl",
@@ -44,6 +45,8 @@ def test_turn_prompt_separates_initial_run_context_from_resume_context(tmp_path)
     assert str(context.selected_highlights_jsonl) in initial
     assert str(context.run_dir / "review" / "summary.md") not in initial
     assert str(context.opinions_md) in initial
+    assert str(context.candidate_opinions_jsonl) in initial
     assert str(context.selected_highlights_jsonl) not in resume
     assert str(context.opinions_md) not in resume
+    assert str(context.candidate_opinions_jsonl) not in resume
     assert "Command:\nGO" in resume

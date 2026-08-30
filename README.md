@@ -29,6 +29,7 @@ Cycle bundles (`RUNS_DIR`, default `.runs`) hold fixed evidence snapshots and re
 ```text
 active/<cycle_id>/batches/<number>/selected-highlights.jsonl
 active/<cycle_id>/batches/<number>/selected-documents.jsonl, critic-context.jsonl
+active/<cycle_id>/batches/<number>/candidate-opinions.jsonl
 active/<cycle_id>/batches/<number>/recovery/<run_id>/
 completed/<cycle_id>/
 ```
@@ -43,17 +44,24 @@ PostgreSQL owns cycles, batches, evidence assignments, leases, runs, Telegram id
    `opinion-run` remains a manual run-only command and selects an explicit or previous-seven-day window.
    including Reader highlights, document-level notes, and tagged document summaries, writes the run bundle, and starts
    one ThinHarness conversation.
-3. The agent returns native structured output: `status` plus one or more Telegram message specs. The app sends those
-   messages exactly, with deterministic `opinion-run:<run_id>:turn:<turn_seq>:message:<index>` idempotency keys, and
-   stores Telegram's real `(chat_id, message_id)` values.
-4. Telegram callbacks and replies are recorded against the stored outbound message by `(chat_id, message_id)`.
+3. The main agent writes independent candidates to the active run's `candidate-opinions.jsonl`, then runs the existing
+   omission-only fidelity critic once per candidate by candidate ID. After applying critic feedback, it runs one
+   read-only consolidator per candidate. The post-critic candidate file then stays frozen. A consolidator either keeps
+   the candidate new or routes a non-empty evidence subset into one existing-opinion proposal. For a partial move, the
+   main agent authors residual add-proposal text around the remaining evidence without changing the candidate snapshot.
+4. The main agent authors native structured output: `status` plus one or more Telegram message specs. The app sends
+   those messages exactly, with deterministic `opinion-run:<run_id>:turn:<turn_seq>:message:<index>` idempotency keys,
+   and stores Telegram's real `(chat_id, message_id)` values. Full and partial consolidation affect only proposal text
+   and conversation state. Candidate and consolidation working state does not edit durable opinion files before
+   approval and does not add a recovery checkpoint.
+5. Telegram callbacks and replies are recorded against the stored outbound message by `(chat_id, message_id)`.
    Callback data must match a button that was actually sent. A single response does not resume the agent until every
    required message in the current turn has a response.
-5. Exact uppercase `GO` and `SKIP` from `TELEGRAM_ALLOWED_CHAT_ID` resume the same agent conversation immediately as
+6. Exact uppercase `GO` and `SKIP` from `TELEGRAM_ALLOWED_CHAT_ID` resume the same agent conversation immediately as
    concrete user input. The app does not interpret these commands as proposal accept/reject decisions.
-6. The agent writes the opinion artifacts directly when the conversation has enough approval or revision context, calls
+7. The agent writes the opinion artifacts directly when the conversation has enough approval or revision context, calls
    the same validator the app uses, and returns `done` or `blocked`.
-7. After `done`, the app validates once more, rejects unrelated staged files, stages only `OPINIONS.md` and
+8. After `done`, the app validates once more, rejects unrelated staged files, stages only `OPINIONS.md` and
    `OPINIONS_SOURCES.jsonl`, commits/pushes those files if changed, updates the opinion-ID high-water mark, advances
    the evidence assignment, and only then sends final success-style Telegram messages. The worker queues the next
    batch automatically. `opinion-decisions.jsonl` lives in
@@ -144,7 +152,9 @@ Useful `opinion-run` flags: `--deterministic-agent` (no model calls), `--skip-sy
 `sample-run W04` maps `W04` to the fourth chronological seven-day window in the local corpus, starting from the Monday
 of the earliest dated highlight. It creates a readable run directory named `<timestamp>-W04` under `.runs/active/`,
 copies the configured corpus plus a chosen opinions file into that directory, initializes a disposable local git remote,
-and runs the normal agent workflow against those copied paths. The agent cannot read or write the original opinion repo
+and runs the normal agent workflow against those copied paths. Inspect `candidate-opinions.jsonl`,
+`review/initial-telegram.md`, and the local/Braintrust traces to review extraction, fidelity checks, consolidation, and
+final proposals. The agent cannot read or write the original opinion repo
 files during a sample run. Use `--opinions-file PATH` to choose the seed file; it defaults to `OPINIONS.md` in the
 current working directory. If no sources file is supplied, sample setup derives `OPINIONS_SOURCES.jsonl` from inline
 `<!-- sources: ... -->` comments and the copied corpus evidence rows. By default, sample runs use fake Telegram and

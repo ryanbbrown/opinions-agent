@@ -28,6 +28,7 @@ from opinions_agent.worker import process_queued_once, reconcile_startup
 from opinions_agent.workflow import (
     ActiveRunError,
     handle_telegram_update,
+    run_pending_opinion_run,
     send_agent_messages,
     start_opinion_run,
     transition,
@@ -181,6 +182,103 @@ async def test_callback_resumes_agent_then_validates_commits_and_records_durabil
     assert "Durability: commit" in telegram.sent[-1][1].text
     assert not RunPaths(settings.runs_dir).active_run_dir(run.id).exists()
     assert (RunPaths(settings.runs_dir).completed_run_dir(run.id) / "final.json").exists()
+
+
+class CandidateOnlyAgent(OpinionAgent):
+    async def run_turn(self, *, context: AgentReadContext, **kwargs):
+        write_jsonl_atomic(
+            context.candidate_opinions_jsonl,
+            [
+                {
+                    "candidate_id": "candidate-001",
+                    "section": "Agentic Software",
+                    "opinion_text": "A temporary candidate.",
+                    "evidence_ids": ["rw:h0"],
+                }
+            ],
+        )
+        return AgentTurnOutput(
+            status="awaiting_user",
+            telegram_messages=[
+                TelegramMessageSpec(
+                    text="Candidate proposal.",
+                    buttons=[{"text": "Approve", "callback_data": "approve:candidate-001"}],
+                )
+            ],
+        ), {"candidate": True}
+
+
+async def test_initial_turn_persists_candidates_without_editing_durable_opinion_files(
+    session,
+    settings: Settings,
+    opinions_repo: Path,
+) -> None:
+    seed_corpus(settings)
+    opinions_before = settings.opinions_target_path.read_text(encoding="utf-8")
+    sources_before = settings.opinions_sources_path.read_text(encoding="utf-8")
+
+    run = await start_run(session, settings, FakeTelegramClient(), CandidateOnlyAgent())
+
+    assert run is not None and run.status == RunStatus.AWAITING_USER.value
+    candidate_path = Path(run.input_paths["candidate_opinions_jsonl"])
+    assert read_jsonl(candidate_path)[0]["candidate_id"] == "candidate-001"
+    assert settings.opinions_target_path.read_text(encoding="utf-8") == opinions_before
+    assert settings.opinions_sources_path.read_text(encoding="utf-8") == sources_before
+
+
+class FailingCandidateAgent(OpinionAgent):
+    async def run_turn(self, *, context: AgentReadContext, **kwargs):
+        write_jsonl_atomic(
+            context.candidate_opinions_jsonl,
+            [
+                {
+                    "candidate_id": "candidate-001",
+                    "section": "Agentic Software",
+                    "opinion_text": "Stale failed-attempt candidate.",
+                    "evidence_ids": ["rw:h0"],
+                }
+            ],
+        )
+        raise RuntimeError("candidate generation failed")
+
+
+class RetryCandidateAgent(CandidateOnlyAgent):
+    async def run_turn(self, *, context: AgentReadContext, **kwargs):
+        assert not context.candidate_opinions_jsonl.exists()
+        return await super().run_turn(context=context, **kwargs)
+
+
+async def test_retry_initial_turn_removes_failed_candidate_file_and_recreates_it(
+    session,
+    settings: Settings,
+    opinions_repo: Path,
+) -> None:
+    seed_corpus(settings)
+    with pytest.raises(RuntimeError, match="candidate generation failed"):
+        await start_run(session, settings, FakeTelegramClient(), FailingCandidateAgent())
+    failed = session.scalar(select(OpinionRun))
+    assert failed is not None
+    candidate_path = Path(failed.input_paths["candidate_opinions_jsonl"])
+    assert read_jsonl(candidate_path)[0]["opinion_text"] == "Stale failed-attempt candidate."
+
+    retry = OpinionRun(
+        status=RunStatus.PENDING_AGENT.value,
+        window_start=failed.window_start,
+        window_end=failed.window_end,
+        input_paths=failed.input_paths,
+    )
+    session.add(retry)
+    session.commit()
+    await run_pending_opinion_run(
+        session=session,
+        settings=settings,
+        agent=RetryCandidateAgent(),
+        telegram=FakeTelegramClient(),
+        run=retry,
+    )
+
+    assert retry.status == RunStatus.AWAITING_USER.value
+    assert read_jsonl(candidate_path)[0]["opinion_text"] == "A temporary candidate."
 
 
 class TwoMessageAgent(OpinionAgent):
