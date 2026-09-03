@@ -4,7 +4,7 @@ Append-only ledger of prompt-optimization experiments, owned by the driver in th
 
 Cost note: Braintrust's `estimated_cost` is accurate for runs made with thinharness ≥ 0.5.1 (bumped 2026-07-05), which reports OpenAI's `cached_tokens` detail. Experiments recorded before that read ~1.8x high — every input token priced at full rate — so a full 9-week run shown as ~$10 actually cost ~$5.
 
-**Current best:** Pending a fresh baseline under `2026-08-27-reviewed-ground-truth`. The production prompt state remains the explicit-critic-docscope lineage with the selected V2 routing change, but its old scores are not comparable to the corrected ground truth.
+**Current best:** Pending a fresh baseline under `2026-09-02-w12-standalone`. Earlier scores are not comparable because W12-01 changed from an update to a standalone add.
 
 **Score to beat:** Pending the fresh nine-week V2 baseline named in `eval/STATUS.md`.
 
@@ -521,7 +521,7 @@ Each entry records:
 - **Reason:** Ryan reviewed the complete cumulative opinion set and every assigned evidence row. The prior ground truth contained duplicate beliefs, reused evidence rows, weak source assignments, and two incorrect add/update labels.
 - **Changed:** Rebuilt the pre-W04 seed as 13 reviewed opinions; corrected W04-01, W10-03, W13-02, and W13-05; split private software tests from AI-product evals; consolidated overlapping seed opinions; and assigned every final evidence row to at most one opinion.
 - **Resulting contract:** 34 weekly targets produce 44 final opinions with 93 unique evidence rows. Weekly selection contains 63 converted and 75 not-converted rows. W04-01, W08-05, and W12-01 are updates; W13-05 is an add.
-- **Comparability:** Scoring version is now `2026-08-27-reviewed-ground-truth`. Every earlier score in this ledger is historical and must not be used as the current score to beat.
+- **Comparability:** That run used `2026-08-27-reviewed-ground-truth`. The current scoring version is `2026-09-02-w12-standalone`, so it remains historical.
 - **Next:** Run a fresh full V2 baseline before evaluating another prompt variant.
 
 ### pre-consolidation candidate quality metric and smoke (2026-08-30)

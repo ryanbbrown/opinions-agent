@@ -457,7 +457,7 @@ Agent prompts and harnesses should simplify as models improve: give clear struct
 
 ### W08-05
 
-**Operation:** update `opinion-000009`
+**Operation:** add
 
 **Section:** Moats And Strategy
 
@@ -473,10 +473,18 @@ AI commoditizes knowledge that can be specified or copied, while operational sca
 
 **Assigned evidence IDs**
 
+- `rw:01knfjsc5qjmyf0jd2k8yedkwm`
+- `rw:01knfjyjpmmeh1wpv1a4z2dy88`
+- `rw:01knfk2f4x3c2ne8vn10x52rgp`
+- `rw:01knfk4zd7ca5tq7kf760jht7a`
 - `reader-note:01kksy9drnnqysr6tb5e2n0pw3`
 
 **Source excerpts**
 
+- Reality's Moat: “When code goes to zero, only the unspecifiable knowledge is left. A company that was 90% operational knowledge barely notices. A company that was 90% specifiable code just lost its reason to exist.”
+- Reality's Moat: “The test is simple: can a well-funded newcomer reach parity by studying the current state of the system? If yes, the knowledge converges and the moat is a countdown. If no, the knowledge diverges and the moat compounds.”
+- Reality's Moat: “you're not just paying for what they already know. You're paying for them to keep learning on your behalf, because staying current in a shifting system is ongoing work that compounds.”
+- Reality's Moat: “One caveat. Scar tissue becomes worthless when the system it was earned in gets replaced entirely. Chegg”
 - Reality's Moat: “Operational knowledge = ‘scar tissue’: unspecifiable know-how earned by actually operating in a coupled, shifting system, where each surprise changes both the system and what you know about it. It’s divergent knowledge that others can’t reach just by studying current data or code.”
 
 ### W08 not converted
@@ -735,16 +743,17 @@ High agency needs recovery and self-context, not endless escalation; because the
 
 ### W12-01
 
-**Operation:** update `opinion-000002`
+**Operation:** add
 
 **Section:** Agentic Software
 
-Making code cheap to generate does not make ownership or system comprehension cheap to skip; people should understand AI-generated artifacts well enough to defend them under questioning.
+People remain accountable for AI-generated artifacts they ship and should understand them well enough to defend them under questioning; review culture should give harsh, specific pushback when output crosses into slop.
 
 **Core concepts**
 
-- You still have to take ownership of AI-generated work — you're accountable for the artifact even when AI produced it
-- Understand it well enough to defend it under questioning
+- People remain accountable for artifacts even when AI generated them
+- Understand shipped artifacts well enough to defend them under questioning
+- Review culture gives harsh, specific pushback when output crosses into slop
 
 **Assigned evidence IDs**
 

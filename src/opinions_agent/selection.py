@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -65,9 +66,11 @@ def select_run_highlights(
     paths: CorpusPaths,
     window_start: datetime,
     window_end: datetime,
+    *,
+    highlighted_at_overrides: Mapping[str, datetime] | None = None,
 ) -> tuple[list[HighlightRow], list[DocumentRow]]:
     documents_by_id = document_by_id(paths)
-    all_highlights = read_highlights(paths)
+    all_highlights = apply_highlighted_at_overrides(read_highlights(paths), highlighted_at_overrides or {})
     highlights = [
         highlight
         for highlight in select_window(all_highlights, window_start, window_end)
@@ -94,6 +97,36 @@ def select_run_highlights(
         if document is not None:
             seen.setdefault(document.document_id, document)
     return highlights, list(seen.values())
+
+
+def apply_highlighted_at_overrides(
+    highlights: list[HighlightRow],
+    overrides: Mapping[str, datetime],
+) -> list[HighlightRow]:
+    if not overrides:
+        return highlights
+    found: set[str] = set()
+    adjusted: list[HighlightRow] = []
+    for highlight in highlights:
+        highlighted_at = overrides.get(highlight.highlight_id)
+        if highlighted_at is None:
+            adjusted.append(highlight)
+            continue
+        highlighted_at = highlighted_at.astimezone(UTC)
+        found.add(highlight.highlight_id)
+        adjusted.append(
+            highlight.model_copy(
+                update={
+                    "highlighted_at": iso_utc(highlighted_at),
+                    "highlighted_date": highlighted_at.date().isoformat(),
+                    "highlighted_week": iso_week(highlighted_at),
+                }
+            )
+        )
+    missing = sorted(set(overrides) - found)
+    if missing:
+        raise ValueError(f"highlight timestamp overrides not found in corpus: {missing}")
+    return adjusted
 
 
 def _is_backfill_document(document: DocumentRow | None) -> bool:

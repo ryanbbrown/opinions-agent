@@ -45,35 +45,27 @@ After critic feedback, the main agent calls one consolidator subagent per candid
 
 Each call asks one question:
 
-> Should all or part of this candidate remain new, or should some of its evidence and claim be consolidated into one existing opinion?
+> Should all or part of this candidate stay independent, attach to one existing opinion, or revise one existing opinion as the complete canonical statement of the same belief?
 
-The minimal typed response is `null` when all candidate evidence remains with the new opinion. Otherwise it is:
+The root output always contains a required non-empty `reasoning` string before one tagged `decision` object:
 
 ```json
-{
-  "existing_opinion_id": "opinion-000012",
-  "opinion_text": "Complete revised existing opinion text.",
-  "evidence_ids": ["rw:..."]
-}
+{"reasoning": "...", "decision": {"kind": "independent"}}
+{"reasoning": "...", "decision": {"kind": "attach", "existing_opinion_id": "opinion-000012", "evidence_ids": ["rw:..."]}}
+{"reasoning": "...", "decision": {"kind": "revise", "existing_opinion_id": "opinion-000012", "revised_opinion_text": "Complete revised existing opinion text.", "evidence_ids": ["rw:..."]}}
 ```
 
-A non-null response must:
+An `attach` or `revise` decision must name exactly one existing opinion ID and list a non-empty subset of the candidate's evidence IDs. A `revise` decision must also provide the complete resulting opinion text. Existing evidence already attached to the opinion remains attached and does not need to be repeated. Candidate evidence absent from the response stays with the new proposal. If every candidate evidence ID is returned, no new-opinion proposal remains. If only some are returned, the main agent authors residual proposal text around the remaining evidence. These decisions affect only conversation state and proposal routing; the frozen candidate row stays unchanged.
 
-- name exactly one existing opinion ID;
-- provide the complete resulting existing opinion text;
-- list the candidate evidence IDs that move to that existing opinion.
-
-The returned evidence IDs must be a non-empty subset of the candidate's evidence IDs. Existing evidence already attached to the opinion remains attached and does not need to be repeated. Candidate evidence absent from the response stays with the new proposal. If every candidate evidence ID is returned, no new-opinion proposal remains. If only some are returned, the main agent authors residual proposal text around the remaining evidence. These decisions affect only conversation state and proposal routing; the frozen candidate row stays unchanged.
-
-The consolidator has no other actions. It cannot discard evidence, create a different new opinion, target several existing opinions from one call, remove an opinion, split an opinion, reorder opinions, or edit files. If an existing opinion already expresses the moved evidence fully, the consolidator may return its current text unchanged.
+The consolidator has no other actions. It cannot discard evidence, create a different new opinion, target several existing opinions from one call, remove an opinion, split an opinion, reorder opinions, or edit files.
 
 ### 4. Write Telegram messages
 
 The main agent writes Telegram messages as it does now:
 
-- A `null` consolidator response becomes an add-opinion proposal using the candidate's existing text and evidence.
-- A full consolidation becomes one revise-existing-opinion proposal and removes the candidate only from the proposal set, not from `candidate-opinions.jsonl`.
-- A partial consolidation becomes one revise-existing-opinion proposal plus a rewritten add-opinion proposal supported only by the evidence that remains; its saved candidate row and evidence list stay unchanged.
+- An `independent` decision becomes an add-opinion proposal using the candidate's existing text and evidence.
+- A full `attach` or `revise` decision becomes one existing-opinion proposal and removes the candidate only from the proposal set, not from `candidate-opinions.jsonl`.
+- A partial `attach` or `revise` decision becomes one existing-opinion proposal plus a rewritten add-opinion proposal supported only by the evidence that remains; its saved candidate row and evidence list stay unchanged.
 
 The main agent owns the residual proposal rewrite without another critic call. Telegram remains agent-authored. The main agent can ask ordinary questions, explain a recommendation, respond to feedback, and reword proposals. The consolidator output is advisory input, not an immutable instruction that later messages must copy byte for byte.
 
@@ -93,7 +85,7 @@ Keep the current omission-only critic and parallel one-call-per-candidate behavi
 
 ### Consolidator
 
-Add a dedicated `SubAgentConfig` with a typed nullable response. Run one call per candidate after critic feedback, in parallel. Give each call read-only access to its candidate and evidence, current opinions, and provenance.
+Add a dedicated `SubAgentConfig` with a typed root reasoning field and a nested tagged decision union. Run one call per candidate after critic feedback, in parallel. Give each call read-only access to its candidate and evidence, current opinions, and provenance.
 
 The consolidator does not need its own persistent output file. The main agent receives each typed response in the same conversation and uses the results to write Telegram messages. Braintrust traces capture the responses for inspection.
 
@@ -109,7 +101,7 @@ Update the prompt and tool instructions to enforce this order:
 6. write Telegram proposals;
 7. resume after responses and apply approved durable edits.
 
-The main agent remains responsible for all new-opinion writing. The consolidator supplies only complete replacement text for an existing opinion.
+The main agent remains responsible for all new-opinion writing. The consolidator either keeps the candidate independent, attaches evidence without rewriting the existing opinion, or supplies complete replacement text for one existing opinion.
 
 ## Eval scope
 
@@ -124,8 +116,8 @@ Before code changes, update `docs/behavior.md` to state:
 - extraction always creates independent candidates;
 - the fidelity critic runs once before consolidation;
 - one consolidator call checks each candidate against existing opinions;
-- `null` keeps the complete candidate new and unchanged;
-- non-null responses move a named evidence subset into one existing opinion;
+- `independent` keeps the complete candidate new and unchanged;
+- `attach` and `revise` move a named evidence subset into one existing opinion;
 - the main agent rewrites a partially consolidated candidate around its remaining evidence;
 - temporary candidate files do not add recovery checkpoints;
 - the main agent still owns Telegram and approved durable edits;
@@ -159,14 +151,14 @@ Verification:
 
 ### 4. Add per-candidate consolidation
 
-- Add a typed nullable consolidation response model.
+- Add a typed root object with required reasoning plus `independent`, `attach`, and `revise` decision variants.
 - Add the read-only consolidator subagent and call it once per candidate in parallel.
 - Validate existing opinion IDs and require returned evidence IDs to be a non-empty subset of the scoped candidate's evidence.
-- Update the main prompt to keep `null` candidates new, omit fully consolidated candidates from add proposals, and author partial residual proposal text around remaining evidence without changing the frozen candidate snapshot.
+- Update the main prompt to keep `independent` candidates new, omit fully moved candidates from add proposals, and author partial residual proposal text around remaining evidence without changing the frozen candidate snapshot.
 
 Verification:
 
-- `null`: the complete candidate remains new.
+- `independent`: the complete candidate remains new.
 - Full consolidation: all evidence moves to one existing opinion and no new candidate remains.
 - Partial consolidation: selected evidence moves and the main agent rewrites the remaining new candidate.
 - Existing wording unchanged with new evidence attached.
@@ -196,7 +188,7 @@ Before implementation review, run the real ThinHarness workflow through cproxy o
 - Deterministic Telegram rendering.
 - Durable candidate or consolidation checkpoints.
 - Mid-turn crash resume.
-- Consolidator actions other than null or consolidation into one existing opinion.
+- Consolidator actions other than independent, attach, or revise for one existing opinion.
 - App-interpreted opinion mutations.
 - New extraction or consolidation eval targets, runners, scorers, or fixtures.
 - Compatibility with incomplete historical run attempts.

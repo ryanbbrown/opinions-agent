@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
@@ -69,10 +71,20 @@ def load_week_cases(path: Path | None = None) -> list[WeekCase]:
     return [WeekCase.model_validate(row) for row in read_jsonl(path or default_targets_path())]
 
 
-def verify_week_partition(case: WeekCase, corpus: CorpusPaths) -> None:
+def verify_week_partition(
+    case: WeekCase,
+    corpus: CorpusPaths,
+    *,
+    availability_overrides: Mapping[str, datetime] | None = None,
+) -> None:
     """Ground truth must label every selected evidence row for the week exactly once."""
     start, end = week_window_for_label(corpus, case.week)
-    selected, _ = select_run_highlights(corpus, start, end)
+    selected, _ = select_run_highlights(
+        corpus,
+        start,
+        end,
+        highlighted_at_overrides=availability_overrides,
+    )
     selected_ids = {highlight.highlight_id for highlight in selected}
     converted = case.converted_evidence_ids()
     not_converted = {evidence.evidence_id for evidence in case.not_converted}

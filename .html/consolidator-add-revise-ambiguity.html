@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Why two add targets looked like revisions</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --page: #f3f1eb;
+      --surface: #fffdf8;
+      --surface-soft: #f8f6f0;
+      --ink: #202521;
+      --muted: #68716b;
+      --line: #d9d5ca;
+      --existing: #315c9b;
+      --existing-bg: #eef4ff;
+      --candidate: #7656a6;
+      --candidate-bg: #f5efff;
+      --add: #18794e;
+      --add-bg: #edf9f2;
+      --revise: #a24d13;
+      --revise-bg: #fff2e8;
+      --example: #8a5a12;
+      --example-bg: #fff8e8;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--page);
+      color: var(--ink);
+      font: 16px/1.55 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    main { width: min(1220px, calc(100% - 28px)); margin-inline: auto; padding-block: 40px 72px; }
+    h1, h2, h3, p, li, blockquote { overflow-wrap: break-word; }
+    h1 { max-width: 880px; margin: 0; font-size: clamp(34px, 5vw, 54px); line-height: 1.04; letter-spacing: -.045em; text-wrap: balance; }
+    h2 { margin: 0; font-size: clamp(25px, 3vw, 34px); line-height: 1.15; letter-spacing: -.025em; text-wrap: balance; }
+    h3 { margin: 0 0 8px; font-size: 17px; line-height: 1.3; }
+    p { max-width: 72ch; }
+    .lede { margin-block: 14px 0; color: var(--muted); font-size: 18px; text-wrap: pretty; }
+    .summary {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      margin-block: 26px 34px;
+    }
+    .summary > div { padding: 15px 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
+    .summary strong { display: block; margin-block-end: 4px; font-size: 18px; }
+    .summary span { color: var(--muted); }
+    .case {
+      margin-block-end: 28px;
+      padding: clamp(18px, 3vw, 28px);
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      background: var(--surface);
+      box-shadow: 0 10px 28px rgb(25 30 27 / .06);
+    }
+    .case-head { display: flex; justify-content: space-between; gap: 18px; align-items: flex-start; margin-block-end: 20px; }
+    .eyebrow, .label {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: .075em;
+      text-transform: uppercase;
+    }
+    .badge { flex: none; padding: 6px 10px; border: 1px solid #9bd3b5; border-radius: 999px; background: var(--add-bg); color: var(--add); font-size: 12px; font-weight: 800; text-transform: uppercase; }
+    .pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .panel { min-width: 0; padding: 16px; border: 1px solid var(--line); border-block-start: 5px solid; border-radius: 14px; }
+    .panel.existing { border-block-start-color: var(--existing); background: var(--existing-bg); }
+    .panel.candidate { border-block-start-color: var(--candidate); background: var(--candidate-bg); }
+    .panel p { margin: 8px 0 0; font-size: 17px; }
+    .evidence { margin-block-start: 14px; padding: 12px 13px; border: 1px solid color-mix(in srgb, var(--example) 35%, var(--line)); border-radius: 10px; background: var(--example-bg); }
+    .evidence blockquote { margin: 7px 0 0; padding-inline-start: 12px; border-inline-start: 3px solid var(--example); }
+    code { color: var(--muted); font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+    .decision-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-block-start: 14px; }
+    .decision { padding: 16px; border: 1px solid var(--line); border-radius: 14px; }
+    .decision.model { background: var(--revise-bg); border-color: color-mix(in srgb, var(--revise) 35%, var(--line)); }
+    .decision.eval { background: var(--add-bg); border-color: color-mix(in srgb, var(--add) 35%, var(--line)); }
+    .decision p { margin: 8px 0 0; }
+    .decision .output { margin-block-start: 12px; padding: 11px 12px; border-radius: 9px; background: color-mix(in srgb, var(--surface) 74%, transparent); font-size: 14px; }
+    .conflict { margin-block-start: 14px; padding: 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface-soft); }
+    .conflict-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+    .conflict p { margin: 6px 0 0; color: var(--muted); }
+    .museum { margin-block-start: 34px; padding: clamp(18px, 3vw, 26px); border: 1px solid color-mix(in srgb, var(--example) 35%, var(--line)); border-radius: 20px; background: var(--example-bg); }
+    .museum-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-block-start: 16px; }
+    .museum-grid > div { padding: 14px; border: 1px solid color-mix(in srgb, var(--example) 28%, var(--line)); border-radius: 12px; background: color-mix(in srgb, var(--surface) 78%, transparent); }
+    .museum-grid p { margin: 7px 0 0; }
+    .takeaway { margin-block-start: 18px; padding: 14px 16px; border-inline-start: 4px solid var(--example); background: color-mix(in srgb, var(--surface) 76%, transparent); }
+    .takeaway p { margin: 0; }
+    footer { margin-block-start: 28px; color: var(--muted); font-size: 13px; }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --page: #171a18;
+        --surface: #202421;
+        --surface-soft: #252a27;
+        --ink: #eff4f0;
+        --muted: #a8b2ac;
+        --line: #3a403c;
+        --existing: #8ab8ff;
+        --existing-bg: #1d2a3b;
+        --candidate: #c6a4ff;
+        --candidate-bg: #2d243b;
+        --add: #7bdca8;
+        --add-bg: #193429;
+        --revise: #ffad76;
+        --revise-bg: #3b271d;
+        --example: #e2bb66;
+        --example-bg: #362f20;
+      }
+    }
+    @media (max-width: 820px) {
+      .summary, .pair, .decision-grid, .conflict-grid, .museum-grid { grid-template-columns: 1fr; }
+      .case-head { display: block; }
+      .badge { display: inline-block; margin-block-start: 10px; }
+    }
+    @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="eyebrow">Consolidator prompt review</div>
+    <h1>Why two valid additions looked like revisions</h1>
+    <p class="lede">The current prompt contains two competing instructions: keep independently useful beliefs separate, but revise an existing opinion when a candidate completes the same decision. These cases sit close to that boundary.</p>
+  </header>
+
+  <section class="summary" aria-label="Review summary">
+    <div><strong>W08-04</strong><span>Thin harness architecture versus simplifying the harness as models improve.</span></div>
+    <div><strong>W13-05</strong><span>Private software tests versus private AI-product evaluation assets.</span></div>
+  </section>
+
+  <article class="case" id="w08">
+    <div class="case-head">
+      <div>
+        <div class="eyebrow">W08-04 · candidate-009</div>
+        <h2>Architecture rule or lifecycle rule?</h2>
+      </div>
+      <span class="badge">Eval expects add</span>
+    </div>
+
+    <div class="pair">
+      <section class="panel existing" aria-labelledby="w08-existing">
+        <div class="label" id="w08-existing">Existing opinion-000018</div>
+        <p>Agent systems should keep the harness thin, put reusable judgment and process in skills, and push repeatable execution into deterministic tools so model improvements compound without making reliability depend on the model.</p>
+      </section>
+      <section class="panel candidate" aria-labelledby="w08-candidate">
+        <div class="label" id="w08-candidate">Generated candidate</div>
+        <p>As foundation models improve, agent harnesses should usually get simpler rather than more elaborate. Manus's repeated rewrites removed machinery each time; if a harness keeps accumulating complexity while the model gains capability, the harness is probably fighting yesterday's limitations instead of exploiting today's model. Simpler must not mean vague: use clearly structured prompts and canonical examples while letting the model handle edge cases rather than hard-coding them.</p>
+        <div class="evidence">
+          <div class="label">Evidence owned by this candidate</div>
+          <code>rw:01kr1gd42xk8r6ttgm3as7dx56</code>
+          <blockquote>Manus has been rewritten five times. Each rewrite removed things. If your agent harness is getting more complex while models get better, something is wrong.</blockquote>
+        </div>
+      </section>
+    </div>
+
+    <div class="decision-grid">
+      <section class="decision model">
+        <div class="label">Why the model chose revise</div>
+        <p>It treated both texts as answers to one agent-architecture decision. It read “simplify over time” as a missing boundary on “keep the harness thin.” That closely matches the museum completion example.</p>
+        <div class="output"><strong>Model reasoning:</strong> “The candidate adds a useful simplification-over-time rule … while the existing claim preserves deterministic tooling for repeatable execution.”</div>
+      </section>
+      <section class="decision eval">
+        <div class="label">Why the eval expects add</div>
+        <p>The existing opinion assigns responsibility across a stack: skills hold reusable judgment and tools handle repeatable execution. The candidate governs change over time: remove machinery as models absorb it, while keeping prompts structured. Both rules can remain useful on their own.</p>
+        <div class="output"><strong>Expected new opinion:</strong> Agent prompts and harnesses should simplify as models improve: give clear structure and canonical examples, but avoid sprawling if-else prompts that try to pre-solve every edge case.</div>
+      </section>
+    </div>
+
+    <section class="conflict" aria-labelledby="w08-conflict">
+      <h3 id="w08-conflict">Prompt conflict</h3>
+      <div class="conflict-grid">
+        <div><div class="label">Points toward independent</div><p>“Choose independent when they answer different questions” and the negative “same system, neighboring policy” example.</p></div>
+        <div><div class="label">Points toward revise</div><p>The museum example says to revise when the candidate adds a missing boundary to the same decision.</p></div>
+      </div>
+    </section>
+  </article>
+
+  <article class="case" id="w13">
+    <div class="case-head">
+      <div>
+        <div class="eyebrow">W13-05 · candidate-008</div>
+        <h2>Software verification asset or product-quality asset?</h2>
+      </div>
+      <span class="badge">Eval expects add</span>
+    </div>
+
+    <div class="pair">
+      <section class="panel existing" aria-labelledby="w13-existing">
+        <div class="label" id="w13-existing">Existing opinion-000004</div>
+        <p>Private test suites can be more durable than the generated implementation they verify; SQLite's closed test suite is a clearer moat than its open-source core.</p>
+      </section>
+      <section class="panel candidate" aria-labelledby="w13-candidate">
+        <div class="label" id="w13-candidate">Generated candidate</div>
+        <p>As AI makes software artifacts cheap to reproduce, “we built it” stops being the moat. Defensibility shifts to information asymmetry: the private eval set competitors cannot score against, the edge cases users actually encounter, and the privately measured ground truth—the target a competitor's optimization loop cannot see.</p>
+        <div class="evidence">
+          <div class="label">Evidence owned by this candidate</div>
+          <code>rw:01kv1xmg4addxx1z2p41kz4jbh</code>
+          <blockquote>The next era belongs to whoever owns what the artifact never contained: the eval set nobody else can score against, the edge cases users trip on, and the ground truth measured privately.</blockquote>
+        </div>
+      </section>
+    </div>
+
+    <div class="decision-grid">
+      <section class="decision model">
+        <div class="label">Why the model chose revise</div>
+        <p>It treated private test suites, private eval sets, user edge cases, and private ground truth as members of one category: evaluation information competitors cannot copy. It read the candidate as completing the existing moat claim.</p>
+        <div class="output"><strong>Model reasoning:</strong> “The candidate completes the existing claim by generalizing beyond closed test suites to real user edge cases and privately measured ground truth.”</div>
+      </section>
+      <section class="decision eval">
+        <div class="label">Why the eval expects add</div>
+        <p>The existing opinion compares a private software verification suite with the implementation it verifies. The candidate identifies private product-quality knowledge—real user failures, private evals, and measured ground truth—as a strategic asset. The eval treats those as separate beliefs rather than one broad moat category.</p>
+        <div class="output"><strong>Expected new opinion:</strong> For AI products, private eval sets and real user edge cases can be more durable than the product artifact because they define quality against failure modes competitors cannot see.</div>
+      </section>
+    </div>
+
+    <section class="conflict" aria-labelledby="w13-conflict">
+      <h3 id="w13-conflict">Prompt conflict</h3>
+      <div class="conflict-grid">
+        <div><div class="label">Points toward independent</div><p>The scope test forbids broadening the subject to make a merge fit. The “generic umbrella is not a canonical belief” example also favors two precise opinions.</p></div>
+        <div><div class="label">Points toward revise</div><p>The museum example rewards replacing a narrow rule with a broader rule when the candidate adds an important boundary or category.</p></div>
+      </div>
+    </section>
+  </article>
+
+  <section class="museum" aria-labelledby="museum-title">
+    <div class="eyebrow">Positive example in the active prompt</div>
+    <h2 id="museum-title">The museum example teaches canonical expansion</h2>
+    <div class="museum-grid">
+      <div><div class="label">Existing</div><p>Museums should keep gallery lighting low because bright light damages displayed objects.</p></div>
+      <div><div class="label">Candidate</div><p>Museums can use brighter lighting for robust stone because safe levels depend on material.</p></div>
+      <div><div class="label">Required result</div><p>Revise the old opinion into one material-sensitive rule covering fragile and robust objects.</p></div>
+    </div>
+    <div class="takeaway"><p><strong>Why it transfers:</strong> the model can describe W08 as adding a time boundary and W13 as adding new evaluation-asset categories. The negative rules can also describe both as independently useful neighboring beliefs. The current prompt does not give the model a decisive way to choose between those readings.</p></div>
+  </section>
+
+  <footer>Source: tag-first-comprehension-base-full-20260901-r1. This document covers only the two valid add targets that the consolidator revised.</footer>
+</main>
+</body>
+</html>

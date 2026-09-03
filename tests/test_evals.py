@@ -7,6 +7,7 @@ import pytest
 
 from opinions_agent.agent import TelegramButtonSpec, TelegramMessageSpec
 from opinions_agent.corpus import CorpusPaths
+from opinions_agent.evals.availability import load_evidence_availability
 from opinions_agent.evals.proposals import parse_proposals
 from opinions_agent.evals.scorers import (
     evidence_precision,
@@ -318,8 +319,9 @@ def test_target_weighted_quality_weights_targets_not_weeks():
 def test_checked_in_targets_partition_matches_corpus():
     cases = load_week_cases()
     corpus = CorpusPaths(REAL_CORPUS)
+    availability_overrides = load_evidence_availability()
     for case in cases:
-        verify_week_partition(case, corpus)
+        verify_week_partition(case, corpus, availability_overrides=availability_overrides)
     for case in cases:
         for case_target in case.targets:
             assert case_target.required_sources, f"{case_target.target_id} has no required sources"
@@ -336,23 +338,30 @@ def test_checked_in_ground_truth_builds_reviewed_final_state():
 
     assert [case.week for case in cases] == ["W04", "W05", "W06", "W07", "W08", "W10", "W11", "W12", "W13"]
     assert [opinion.opinion_id for opinion in base.opinions] == [
-        f"opinion-{index:06d}" for index in range(1, 14)
+        f"opinion-{index:06d}" for index in range(1, 13)
     ]
     base_sources = [source for opinion in base.opinions for source in opinion.sources]
-    assert len(base_sources) == len(set(base_sources)) == 30
+    assert len(base_sources) == len(set(base_sources)) == 26
 
     target_ids = [target.target_id for case in cases for target in case.targets]
     assert len(target_ids) == len(set(target_ids)) == 34
-    assert sum(len(target.required_sources) for case in cases for target in case.targets) == 63
+    assert sum(len(target.required_sources) for case in cases for target in case.targets) == 67
     assert sum(len(case.not_converted) for case in cases) == 75
 
     targets = {target.target_id: target for case in cases for target in case.targets}
     assert targets["W04-01"].kind == "update"
     assert targets["W04-01"].base_opinion_id == "opinion-000003"
-    assert targets["W08-05"].kind == "update"
-    assert targets["W08-05"].base_opinion_id == "opinion-000009"
-    assert targets["W12-01"].kind == "update"
-    assert targets["W12-01"].base_opinion_id == "opinion-000002"
+    assert targets["W08-05"].kind == "add"
+    assert targets["W08-05"].base_opinion_id is None
+    assert targets["W08-05"].required_sources == [
+        "rw:01knfjsc5qjmyf0jd2k8yedkwm",
+        "rw:01knfjyjpmmeh1wpv1a4z2dy88",
+        "rw:01knfk2f4x3c2ne8vn10x52rgp",
+        "rw:01knfk4zd7ca5tq7kf760jht7a",
+        "reader-note:01kksy9drnnqysr6tb5e2n0pw3",
+    ]
+    assert targets["W12-01"].kind == "add"
+    assert targets["W12-01"].base_opinion_id is None
     assert targets["W13-05"].kind == "add"
     assert targets["W13-05"].base_opinion_id is None
 
@@ -365,12 +374,12 @@ def test_checked_in_ground_truth_builds_reviewed_final_state():
     final_case = WeekCase(week="FINAL", targets=[], not_converted=[])
     final = build_seed_opinions(base, [*cases, final_case], "FINAL")
     assert [opinion.opinion_id for opinion in final.opinions] == [
-        f"opinion-{index:06d}" for index in range(1, 45)
+        f"opinion-{index:06d}" for index in range(1, 46)
     ]
     final_sources = [source for opinion in final.opinions for source in opinion.sources]
     assert len(final_sources) == len(set(final_sources)) == 93
 
-    expected_add_id = 14
+    expected_add_id = 13
     for case in cases:
         for target in case.targets:
             if target.kind == "add":
@@ -378,10 +387,14 @@ def test_checked_in_ground_truth_builds_reviewed_final_state():
                 assert opinion.text == target.ideal_opinion
                 assert opinion.sources == target.required_sources
                 expected_add_id += 1
-    assert expected_add_id == 45
+    assert expected_add_id == 46
     assert final.get("opinion-000003").text == targets["W04-01"].ideal_opinion
-    assert final.get("opinion-000009").text == targets["W08-05"].ideal_opinion
-    assert final.get("opinion-000002").text == targets["W12-01"].ideal_opinion
+    assert final.get("opinion-000029").text == targets["W08-05"].ideal_opinion
+    assert final.get("opinion-000038").text == targets["W12-01"].ideal_opinion
+    assert final.get("opinion-000002").text == (
+        "Making code cheap to generate can create comprehension debt when teams optimize for passing tests "
+        "and merge velocity without maintaining genuine understanding."
+    )
 
 
 def test_checked_in_targets_markdown_is_generated_from_jsonl():
@@ -444,7 +457,15 @@ async def test_run_week_case_deterministic_end_to_end(settings):
         }
     )
     base_doc = parse_opinions(BASE_OPINIONS.replace("rw:base-a", "rw:h1"))
-    output = await run_week_case(settings, case, [case], base_doc=base_doc, deterministic=True, parent="")
+    output = await run_week_case(
+        settings,
+        case,
+        [case],
+        base_doc=base_doc,
+        deterministic=True,
+        parent="",
+        availability_overrides={},
+    )
     assert output["status"] == "awaiting_user"
     assert len(output["proposals"]) == 1
     assert output["proposals"][0]["evidence_ids"] == ["rw:h0"]

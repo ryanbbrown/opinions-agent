@@ -7,7 +7,7 @@ from html import escape
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, RootModel, create_model, field_validator
+from pydantic import BaseModel, ConfigDict, Field, create_model, field_validator
 
 from opinions_agent.config import Settings
 from opinions_agent.corpus import CorpusPaths
@@ -72,50 +72,107 @@ class OpinionCandidate(BaseModel):
         return normalized
 
 
-class OpinionConsolidation(BaseModel):
+class IndependentOpinionDecision(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    kind: Literal["independent"]
+
+
+class AttachOpinionDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["attach"]
     existing_opinion_id: str = Field(pattern=r"^opinion-[0-9]{6}$")
-    opinion_text: str
     evidence_ids: list[str] = Field(min_length=1)
 
-    @field_validator("opinion_text")
+    @field_validator("evidence_ids")
     @classmethod
-    def require_non_empty_opinion_text(cls, value: str) -> str:
+    def require_unique_evidence_ids(cls, value: list[str]) -> list[str]:
+        return _require_unique_evidence_ids(value)
+
+
+class ReviseOpinionDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["revise"]
+    existing_opinion_id: str = Field(pattern=r"^opinion-[0-9]{6}$")
+    evidence_ids: list[str] = Field(min_length=1)
+    revised_opinion_text: str
+
+    @field_validator("evidence_ids")
+    @classmethod
+    def require_unique_evidence_ids(cls, value: list[str]) -> list[str]:
+        return _require_unique_evidence_ids(value)
+
+    @field_validator("revised_opinion_text")
+    @classmethod
+    def require_non_empty_revised_opinion_text(cls, value: str) -> str:
         value = value.strip()
         if not value:
             raise ValueError("must not be empty")
         return value
 
-    @field_validator("evidence_ids")
+
+def _require_unique_evidence_ids(value: list[str]) -> list[str]:
+    normalized = [evidence_id.strip() for evidence_id in value]
+    if any(not evidence_id for evidence_id in normalized):
+        raise ValueError("evidence IDs must not be empty")
+    duplicate = next(
+        (evidence_id for index, evidence_id in enumerate(normalized) if evidence_id in normalized[:index]),
+        None,
+    )
+    if duplicate is not None:
+        raise ValueError(f"duplicate evidence ID: {duplicate}")
+    return normalized
+
+
+OpinionRelationshipDecision = IndependentOpinionDecision | AttachOpinionDecision | ReviseOpinionDecision
+
+
+class OpinionRelationshipResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reasoning: str
+    decision: OpinionRelationshipDecision
+
+    @field_validator("reasoning")
     @classmethod
-    def require_unique_evidence_ids(cls, value: list[str]) -> list[str]:
-        duplicate = next(
-            (evidence_id for index, evidence_id in enumerate(value) if evidence_id in value[:index]),
-            None,
-        )
-        if duplicate is not None:
-            raise ValueError(f"duplicate evidence ID: {duplicate}")
-        if any(not evidence_id.strip() for evidence_id in value):
-            raise ValueError("evidence IDs must not be empty")
+    def require_non_empty_reasoning(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("must not be empty")
         return value
 
 
 def build_consolidation_output_type(context: AgentReadContext):
     opinion_ids = tuple(opinion.opinion_id for opinion in load_opinions(context.opinions_md).opinions)
     if not opinion_ids:
-        return RootModel[None]
+        return create_model(
+            "EmptyOpinionRelationshipResult",
+            __base__=OpinionRelationshipResult,
+            decision=(IndependentOpinionDecision, ...),
+        )
     allowed_opinion_id = Literal[*opinion_ids]
-    scoped_consolidation = create_model(
-        "ScopedOpinionConsolidation",
-        __base__=OpinionConsolidation,
+    scoped_attach = create_model(
+        "ScopedAttachOpinionDecision",
+        __base__=AttachOpinionDecision,
         existing_opinion_id=(allowed_opinion_id, ...),
     )
-    return RootModel[scoped_consolidation | None]
+    scoped_revise = create_model(
+        "ScopedReviseOpinionDecision",
+        __base__=ReviseOpinionDecision,
+        existing_opinion_id=(allowed_opinion_id, ...),
+    )
+    return create_model(
+        "ScopedOpinionRelationshipResult",
+        __base__=OpinionRelationshipResult,
+        decision=(IndependentOpinionDecision | scoped_attach | scoped_revise, ...),
+    )
 
 
 class ConsolidationValidation(BaseModel):
     candidate_id: str
+    operation: Literal["keep_new", "attach_evidence", "revise_opinion"]
     outcome: Literal["new", "full", "partial"]
     moved_evidence_ids: list[str]
     remaining_evidence_ids: list[str]
@@ -224,32 +281,34 @@ def validate_consolidation(
     *,
     context: AgentReadContext,
     candidate_id: str,
-    consolidation: OpinionConsolidation | None,
+    decision: OpinionRelationshipDecision,
 ) -> ConsolidationValidation:
     candidate = find_opinion_candidate(context, candidate_id)
-    if consolidation is None:
+    if isinstance(decision, IndependentOpinionDecision):
         return ConsolidationValidation(
             candidate_id=candidate_id,
+            operation="keep_new",
             outcome="new",
             moved_evidence_ids=[],
             remaining_evidence_ids=candidate.evidence_ids,
         )
 
     opinion_ids = {opinion.opinion_id for opinion in load_opinions(context.opinions_md).opinions}
-    if consolidation.existing_opinion_id not in opinion_ids:
-        raise ValueError(f"existing opinion ID not found: {consolidation.existing_opinion_id}")
+    if decision.existing_opinion_id not in opinion_ids:
+        raise ValueError(f"existing opinion ID not found: {decision.existing_opinion_id}")
     candidate_evidence = set(candidate.evidence_ids)
-    outside = [evidence_id for evidence_id in consolidation.evidence_ids if evidence_id not in candidate_evidence]
+    outside = [evidence_id for evidence_id in decision.evidence_ids if evidence_id not in candidate_evidence]
     if outside:
         raise ValueError(
             f"consolidation for {candidate_id} references evidence outside the candidate: {', '.join(outside)}"
         )
-    moved = set(consolidation.evidence_ids)
+    moved = set(decision.evidence_ids)
     remaining = [evidence_id for evidence_id in candidate.evidence_ids if evidence_id not in moved]
     return ConsolidationValidation(
         candidate_id=candidate_id,
+        operation="attach_evidence" if isinstance(decision, AttachOpinionDecision) else "revise_opinion",
         outcome="partial" if remaining else "full",
-        moved_evidence_ids=consolidation.evidence_ids,
+        moved_evidence_ids=decision.evidence_ids,
         remaining_evidence_ids=remaining,
     )
 
@@ -515,14 +574,14 @@ def build_consolidation_validation_tool(*, context: AgentReadContext):
 
     class ValidateConsolidationArgs(BaseModel):
         candidate_id: str
-        consolidation: OpinionConsolidation | None
+        result: OpinionRelationshipResult
 
     async def validate_consolidation_result(args: ValidateConsolidationArgs) -> ToolResult:
         try:
             result = validate_consolidation(
                 context=context,
                 candidate_id=args.candidate_id,
-                consolidation=args.consolidation,
+                decision=args.result.decision,
             )
         except Exception as exc:
             return ToolResult(ok=False, content=str(exc))
@@ -532,7 +591,7 @@ def build_consolidation_validation_tool(*, context: AgentReadContext):
         name="validate_consolidation",
         description=(
             "Validate one typed consolidator response against its candidate and current opinion IDs, "
-            "and return moved and remaining evidence IDs."
+            "and return its operation plus moved and remaining evidence IDs."
         ),
         parameters=ValidateConsolidationArgs,
         handler=validate_consolidation_result,
@@ -549,6 +608,7 @@ def build_harness_config(*, context: AgentReadContext, settings: Settings):
         root=_common_root(read_paths + write_paths),
         model=settings.harness_model,
         effort=settings.harness_reasoning_effort,
+        request_timeout=300,
         system_prompt=build_system_prompt(),
         output_type=NativeOutput(AgentTurnOutput),
         output_mode="native",

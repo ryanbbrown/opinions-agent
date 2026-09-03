@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import tempfile
+from collections.abc import Mapping
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 
 from opinions_agent.agent import DeterministicOpinionAgent, ThinHarnessOpinionAgent
 from opinions_agent.config import Settings
 from opinions_agent.corpus import CorpusPaths
 from opinions_agent.db import init_db, make_engine, make_sessionmaker
+from opinions_agent.evals.availability import load_evidence_availability
 from opinions_agent.evals.targets import (
     WeekCase,
     build_seed_opinions,
@@ -40,7 +43,7 @@ TARGETS_DATASET_NAME = "opinion-targets-v2"
 # one value. Bump on any change that alters existing scores (target text, judge prompt or
 # model, scorer code); adding a new metric is not a bump — shared metrics stay comparable.
 # Always a "<YYYY-MM-DD>-<what-changed>" slug; the date prefix names rescore experiments.
-SCORING_VERSION = "2026-08-27-reviewed-ground-truth"
+SCORING_VERSION = "2026-09-02-w12-standalone"
 
 
 def summarize_target_weighted_quality(
@@ -92,10 +95,20 @@ async def run_opinion_eval(
     selected_cases = [case for case in cases if case.week in set(normalized)]
 
     corpus = CorpusPaths(settings.opinions_data_dir)
+    availability_overrides = load_evidence_availability()
     for case in selected_cases:
-        verify_week_partition(case, corpus)
+        verify_week_partition(case, corpus, availability_overrides=availability_overrides)
     base_doc = load_opinions(default_base_opinions_path())
-    all_rows = {case.week: _dataset_row(case, cases, corpus, base_doc) for case in cases}
+    all_rows = {
+        case.week: _dataset_row(
+            case,
+            cases,
+            corpus,
+            base_doc,
+            availability_overrides=availability_overrides,
+        )
+        for case in cases
+    }
     _sync_targets_dataset(settings, list(all_rows.values()))
     data = [all_rows[case.week] for case in selected_cases]
 
@@ -107,6 +120,7 @@ async def run_opinion_eval(
             base_doc=base_doc,
             deterministic=deterministic,
             parent=_current_parent(),
+            availability_overrides=availability_overrides,
         )
 
     candidate_quality = make_candidate_quality_judge(settings)
@@ -299,13 +313,20 @@ async def run_week_case(
     base_doc: OpinionsDocument,
     deterministic: bool,
     parent: str,
+    availability_overrides: Mapping[str, datetime],
 ) -> dict:
     run_id = f"{sample_run_id(case.week)}-eval"
+    window_start, window_end = week_window_for_label(CorpusPaths(settings.opinions_data_dir), case.week)
     seed_doc = build_seed_opinions(base_doc, all_cases, case.week)
     with tempfile.TemporaryDirectory() as seed_dir:
         seed_path = Path(seed_dir) / "OPINIONS.md"
         seed_path.write_text(seed_doc.render(), encoding="utf-8")
-        sample_settings = prepare_sample_settings(settings=settings, run_id=run_id, opinions_file=seed_path)
+        sample_settings = prepare_sample_settings(
+            settings=settings,
+            run_id=run_id,
+            opinions_file=seed_path,
+            highlighted_at_overrides=availability_overrides,
+        )
     sample_settings = replace(
         sample_settings,
         braintrust_parent=parent,
@@ -316,7 +337,6 @@ async def run_week_case(
     SessionLocal = make_sessionmaker(engine)
     telegram = FakeTelegramClient()
     agent = DeterministicOpinionAgent() if deterministic else ThinHarnessOpinionAgent()
-    window_start, window_end = week_window_for_label(CorpusPaths(sample_settings.opinions_data_dir), case.week)
     with SessionLocal() as session:
         run = await start_opinion_run(
             session=session,
@@ -370,9 +390,16 @@ def _dataset_row(
     all_cases: list[WeekCase],
     corpus: CorpusPaths,
     base_doc: OpinionsDocument,
+    *,
+    availability_overrides: Mapping[str, datetime] | None = None,
 ) -> dict:
     start, end = week_window_for_label(corpus, case.week)
-    selected, _ = select_run_highlights(corpus, start, end)
+    selected, _ = select_run_highlights(
+        corpus,
+        start,
+        end,
+        highlighted_at_overrides=availability_overrides,
+    )
     prior_weeks = [earlier.week for earlier in all_cases[: [c.week for c in all_cases].index(case.week)]]
     return {
         "input": {

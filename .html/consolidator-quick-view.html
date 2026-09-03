@@ -98,19 +98,18 @@
   <header>
     <div class="eyebrow">Reviewed eval ground truth</div>
     <h1>What should actually consolidate?</h1>
-    <p class="lede">Each case shows the existing opinion and its old evidence, then the incoming evidence and the correct revised opinion. Only these three target claims belong in existing opinions.</p>
+    <p class="lede">W04 is the only target that must update an existing opinion. W12 shows a reviewed boundary where two related beliefs should remain separate.</p>
     <div class="stats">
-      <div class="stat"><strong>3</strong><span>targets should consolidate</span></div>
-      <div class="stat"><strong>31</strong><span>targets should stay standalone</span></div>
-      <div class="stat"><strong>11/12</strong><span>add targets were wrongly revised in the smoke run</span></div>
+      <div class="stat"><strong>1</strong><span>target should consolidate</span></div>
+      <div class="stat"><strong>33</strong><span>targets should stay standalone</span></div>
+      <div class="stat"><strong>40/42</strong><span>strict candidate routes in the current replay</span></div>
     </div>
-    <div class="warning"><strong>Current failure:</strong> the consolidator is not missing subtle edge cases. It is treating most related beliefs as the same belief.</div>
+    <div class="warning"><strong>Current result:</strong> the two strict routing disagreements were acceptable consolidation proposals after review.</div>
     <nav aria-label="Cases">
       <a href="#w04">W04 · High-quality intent</a>
-      <a href="#w08">W08 · Reality’s Moat</a>
-      <a href="#w12">W12 · Comprehension ownership</a>
-      <a href="#standalone">31 standalone targets</a>
-      <a href="#prompt">Current prompt</a>
+      <a href="#w12">W12 · Keep separate</a>
+      <a href="#standalone">33 standalone targets</a>
+      <a href="#prompt">Previous smoke prompt</a>
     </nav>
   </header>
 
@@ -145,61 +144,15 @@
     <p class="why"><strong>Why these belong together:</strong> both evidence sets make the same claim about the scarce human skill after implementation becomes cheap. The new evidence names that skill as high-quality intent and sharpens its parts.</p>
   </section>
 
-  <section class="case" id="w08">
-    <div class="case-head">
-      <div><div class="eyebrow">W08-05 → opinion-000009</div><h2>Operational knowledge → operational scar tissue</h2></div>
-      <span class="badge">Consolidate</span>
-    </div>
-    <div class="progression">
-      <div class="opinion old"><span class="label">Existing opinion before W08</span><p>AI commoditizes knowledge that can be specified or copied, while operational knowledge compounds in changing systems because staying current requires ongoing real-world learning. This moat disappears when the underlying system is replaced.</p></div>
-      <div class="arrow" aria-hidden="true">→</div>
-      <div class="opinion new"><span class="label">Correct opinion after W08</span><p>AI commoditizes knowledge that can be specified or copied, while operational scar tissue compounds in coupled, changing systems because each real-world surprise changes both the system and how future surprises should be interpreted. This moat disappears when the underlying system is replaced.</p></div>
-    </div>
-    <div class="evidence-grid">
-      <div class="evidence-group">
-        <h3><span class="dot old"></span>Old evidence already attached</h3>
-        <article class="evidence old">
-          <div class="source"><a href="https://davidbeyer.xyz/writing/realitys-moat" target="_blank" rel="noreferrer">Reality's Moat</a></div>
-          <div class="id">rw:01knfjsc5qjmyf0jd2k8yedkwm</div>
-          <blockquote>“When code goes to zero, only the unspecifiable knowledge is left. A company that was 90% operational knowledge barely notices. A company that was 90% specifiable code just lost its reason to exist.”</blockquote>
-        </article>
-        <article class="evidence old">
-          <div class="source">Reality's Moat</div>
-          <div class="id">rw:01knfjyjpmmeh1wpv1a4z2dy88</div>
-          <blockquote>“The test is simple: can a well-funded newcomer reach parity by studying the current state of the system? If yes, the knowledge converges and the moat is a countdown. If no, the knowledge diverges and the moat compounds.”</blockquote>
-        </article>
-        <article class="evidence old">
-          <div class="source">Reality's Moat</div>
-          <div class="id">rw:01knfk2f4x3c2ne8vn10x52rgp</div>
-          <blockquote>“You're not just paying for what they already know. You're paying for them to keep learning on your behalf, because staying current in a shifting system is ongoing work that compounds.”</blockquote>
-        </article>
-        <article class="evidence old">
-          <div class="source">Reality's Moat</div>
-          <div class="id">rw:01knfk4zd7ca5tq7kf760jht7a</div>
-          <blockquote>“One caveat. Scar tissue becomes worthless when the system it was earned in gets replaced entirely. Chegg”</blockquote>
-        </article>
-      </div>
-      <div class="evidence-group">
-        <h3><span class="dot new"></span>New W08 evidence</h3>
-        <article class="evidence new">
-          <div class="source"><a href="https://davidbeyer.xyz/writing/realitys-moat" target="_blank" rel="noreferrer">Reality's Moat · reader note</a></div>
-          <div class="id">reader-note:01kksy9drnnqysr6tb5e2n0pw3</div>
-          <blockquote>“Operational knowledge = ‘scar tissue’: unspecifiable know-how earned by actually operating in a coupled, shifting system, where each surprise changes both the system and what you know about it. It’s divergent knowledge that others can’t reach just by studying current data or code.<br><br>Example: you could copy all of Stripe’s current rules and look equivalent on day one. But when Brazil changes its fraud or settlement rules, you won’t know how that cascades: which merchants get reclassified, which cross-border settlement rules they now collide with, which rerouting patterns Stripe discovered two years ago would avoid the freeze they’ve already survived once. Stripe’s advantage is not today’s rule set; it’s the entangled, path-dependent understanding of how those rules break under real conditions and how to pre-empt or contain the damage.”</blockquote>
-        </article>
-      </div>
-    </div>
-    <p class="why"><strong>Why these belong together:</strong> the new reader note is a more detailed statement of the same moat. It adds the scar-tissue mechanism and the Stripe example; it does not introduce a separate durable belief.</p>
-  </section>
-
   <section class="case" id="w12">
     <div class="case-head">
-      <div><div class="eyebrow">W12-01 → opinion-000002</div><h2>Comprehension → ownership and defense</h2></div>
-      <span class="badge">Consolidate</span>
+      <div><div class="eyebrow">W12-01 · standalone</div><h2>Comprehension debt and artifact accountability</h2></div>
+      <span class="badge">Keep new</span>
     </div>
     <div class="progression">
-      <div class="opinion old"><span class="label">Existing opinion before W12</span><p>Making code cheap to generate does not make system comprehension cheap to skip.</p></div>
-      <div class="arrow" aria-hidden="true">→</div>
-      <div class="opinion new"><span class="label">Correct opinion after W12</span><p>Making code cheap to generate does not make ownership or system comprehension cheap to skip; people should understand AI-generated artifacts well enough to defend them under questioning.</p></div>
+      <div class="opinion old"><span class="label">Existing opinion remains unchanged</span><p>Making code cheap to generate can create comprehension debt when teams optimize for passing tests and merge velocity without maintaining genuine understanding.</p></div>
+      <div class="arrow" aria-hidden="true">+</div>
+      <div class="opinion new"><span class="label">New standalone W12 opinion</span><p>People remain accountable for AI-generated artifacts they ship and should understand them well enough to defend them under questioning; review culture should give harsh, specific pushback when output crosses into slop.</p></div>
     </div>
     <div class="evidence-grid">
       <div class="evidence-group">
@@ -229,31 +182,32 @@
         </article>
       </div>
     </div>
-    <p class="why"><strong>Why these belong together:</strong> the existing opinion already says comprehension remains necessary. The new evidence adds ownership and a concrete test for comprehension: defend the artifact under questioning.</p>
+    <p class="why"><strong>Why these stay separate:</strong> the existing opinion is about comprehension debt in software development. The new opinion is about accountability for any AI-generated artifact and the review culture that enforces it.</p>
   </section>
 
   <section id="standalone">
-    <h2>The other 31 target claims stay standalone</h2>
-    <p class="lede">The consolidator should return <code>null</code> for every target below.</p>
+    <h2>The 33 target claims that stay standalone</h2>
+    <p class="lede">The consolidator should return <code>{&quot;decision&quot;:{&quot;kind&quot;:&quot;independent&quot;}}</code> for every target below.</p>
     <details open>
       <summary>Show standalone target IDs</summary>
       <div class="standalone">
         <p><strong>W04:</strong> W04-02, W04-03, W04-04, W04-05</p>
         <p><strong>W05:</strong> W05-01, W05-02, W05-03, W05-04</p>
         <p><strong>W06:</strong> W06-01, W06-02, W06-03, W06-04</p>
-        <p><strong>W08:</strong> W08-01, W08-02, W08-03, W08-04</p>
+        <p><strong>W08:</strong> W08-01, W08-02, W08-03, W08-04, W08-05</p>
         <p><strong>W10:</strong> W10-01, W10-02, W10-03</p>
         <p><strong>W11:</strong> W11-01, W11-02, W11-03, W11-04, W11-05</p>
-        <p><strong>W12:</strong> W12-02, W12-03</p>
+        <p><strong>W12:</strong> W12-01, W12-02, W12-03</p>
         <p><strong>W13:</strong> W13-01, W13-02, W13-03, W13-04, W13-05</p>
       </div>
     </details>
   </section>
 
   <section id="prompt">
-    <h2>Current consolidator prompt</h2>
+    <h2>Previous smoke-run prompt</h2>
+    <p class="lede">This is the prompt that produced the over-consolidation result above. Review the proposed replacement and its net-new examples in <a href="consolidator-examples-review.html">the contrastive examples document</a>.</p>
     <details>
-      <summary>Show exact prompt</summary>
+      <summary>Show previous prompt</summary>
       <div><pre>You are an opinion consolidator. Each task names exactly one saved candidate ID. Decide only whether all or part of
 that candidate belongs inside one existing opinion.
 

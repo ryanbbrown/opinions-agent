@@ -46,14 +46,15 @@ PostgreSQL owns cycles, batches, evidence assignments, leases, runs, Telegram id
    one ThinHarness conversation.
 3. The main agent writes independent candidates to the active run's `candidate-opinions.jsonl`, then runs the existing
    omission-only fidelity critic once per candidate by candidate ID. After applying critic feedback, it runs one
-   read-only consolidator per candidate. The post-critic candidate file then stays frozen. A consolidator either keeps
-   the candidate new or routes a non-empty evidence subset into one existing-opinion proposal. For a partial move, the
-   main agent authors residual add-proposal text around the remaining evidence without changing the candidate snapshot.
+   read-only consolidator per candidate. The post-critic candidate file then stays frozen. Each consolidator result
+   starts with a required reasoning string, followed by one of three operations: keep the complete candidate new; attach all or part of its evidence to one existing opinion without
+   changing that opinion's text; or attach all or part of its evidence and replace that opinion's text with a complete
+   revision. For a partial evidence move, the main agent writes a residual add proposal around the remaining evidence.
 4. The main agent authors native structured output: `status` plus one or more Telegram message specs. The app sends
    those messages exactly, with deterministic `opinion-run:<run_id>:turn:<turn_seq>:message:<index>` idempotency keys,
-   and stores Telegram's real `(chat_id, message_id)` values. Full and partial consolidation affect only proposal text
-   and conversation state. Candidate and consolidation working state does not edit durable opinion files before
-   approval and does not add a recovery checkpoint.
+   and stores Telegram's real `(chat_id, message_id)` values. Keep, attach, and revise operations affect only proposal
+   text and conversation state. Candidate and consolidation working state does not edit durable opinion files before
+   approval and does not add a recovery checkpoint. Attach-only proposals do not repeat existing opinion text.
 5. Telegram callbacks and replies are recorded against the stored outbound message by `(chat_id, message_id)`.
    Callback data must match a button that was actually sent. A single response does not resume the agent until every
    required message in the current turn has a response.
@@ -234,7 +235,7 @@ OPINIONS_RUN_REAL_E2E=1 cproxy run --port 8113 --chains-max 500 -- uv run pytest
 
 ## Evals
 
-`eval/opinion_targets.jsonl` is the checked-in ground truth converted from `EVAL_TARGETS.md`: per eval week it lists canonical target opinions, required evidence, and selected evidence that should not become opinions. `cproxy run --port 8113 --chains-max 500 -- uv run opinions-agent eval run --weeks W04 ... W13` runs the historical v1 proposal eval. `opinions-agent eval v2 run` runs the same independent weekly cases and preserves every v1 score, then adds `candidate_quality`, deterministic `operation_accuracy`, and `opinion_quality_v2`. `candidate_quality` grades the frozen post-critic, pre-consolidation candidates against add targets only. A v2 target receives final quality credit only when its Telegram proposal passes conceptual quality and uses the canonical operation: add a new opinion, or revise the target's canonical base opinion. `eval v2 rescore --from-experiment <name>` applies v2 to stored Braintrust output without rerunning the opinion agent; candidate quality is available when the stored output includes its candidate snapshot. V1 and v2 sync to separate Braintrust datasets. Both use fake Telegram, stop before approvals, tag experiment rows by week, and attach full agent traces.
+`eval/opinion_targets.jsonl` is the checked-in ground truth: per eval week it lists canonical target opinions, required evidence, and selected evidence that should not become opinions. `eval/evidence_availability.jsonl` can delay evidence to the week when it was fully processed; evals apply those timestamps only to disposable corpus copies and leave `.readwise` unchanged. `cproxy run --port 8113 --chains-max 500 -- uv run opinions-agent eval run --weeks W04 ... W13` runs the historical v1 proposal eval. `opinions-agent eval v2 run` runs the same independent weekly cases and preserves every v1 score, then adds `candidate_quality`, deterministic `operation_accuracy`, and `opinion_quality_v2`. `candidate_quality` grades the frozen post-critic, pre-consolidation candidates against add targets only. A v2 target receives final quality credit only when its Telegram proposal passes conceptual quality and uses the canonical operation: add a new opinion, or revise the target's canonical base opinion. The current reviewed targets contain no evidence-only attach operation, so an attach decision counts as the wrong operation. `eval v2 rescore --from-experiment <name>` applies v2 to stored Braintrust output without rerunning the opinion agent; candidate quality is available when the stored output includes its candidate snapshot. V1 and v2 sync to separate Braintrust datasets. Both use fake Telegram, stop before approvals, tag experiment rows by week, and attach full agent traces.
 
 `uv run opinions-agent eval rescore --from-experiment NAME` re-scores an existing experiment's stored outputs into a
 new experiment without re-running the agent — the cheap loop for judge calibration.

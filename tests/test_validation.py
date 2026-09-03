@@ -235,6 +235,7 @@ async def test_validation_tool_uses_shared_validator(settings: Settings, opinion
 
 async def test_harness_config_uses_fixed_native_tool_surface(settings: Settings, opinions_repo: Path) -> None:
     from thinharness import Harness, PluginContext
+    from thinharness.output import OutputSchema
 
     bundle = make_bundle(settings)
     context = build_read_context(settings, bundle.run_dir)
@@ -245,6 +246,7 @@ async def test_harness_config_uses_fixed_native_tool_surface(settings: Settings,
     assert config.output_mode == "native"
     assert config.model == settings.harness_model
     assert config.effort == settings.harness_reasoning_effort
+    assert config.request_timeout == 300
     assert [plugin.name for plugin in plugins] == ["filesystem", "subagents"]
 
     plugin_context = PluginContext(root=Path(config.root), model=None, child_harnesses=None)
@@ -280,9 +282,22 @@ async def test_harness_config_uses_fixed_native_tool_surface(settings: Settings,
     assert consolidator.output_mode == "native"
     consolidation_schema = build_consolidation_output_type(context).model_json_schema()
     schema_text = json.dumps(consolidation_schema)
+    assert consolidation_schema["type"] == "object"
+    assert list(consolidation_schema["properties"]) == ["reasoning", "decision"]
+    assert "anyOf" not in consolidation_schema
+    wire_schema = OutputSchema.build(consolidator.output_type, consolidator.output_mode).schema
+    decision_branches = wire_schema["properties"]["decision"]["anyOf"]
+    assert len(decision_branches) == 3
+    assert all(next(iter(branch["properties"])) == "kind" for branch in decision_branches)
+    assert '"null"' not in schema_text
     assert "opinion-000001" in schema_text
     assert "opinion-000002" in schema_text
     assert "opinion-000000" not in schema_text
+    assert '"independent"' in schema_text
+    assert '"attach"' in schema_text
+    assert '"revise"' in schema_text
+    assert "revised_opinion_text" in schema_text
+    assert '"opinion_text"' not in schema_text
 
     harness = Harness(
         config,
@@ -310,7 +325,106 @@ async def test_harness_config_uses_fixed_native_tool_surface(settings: Settings,
     assert read_json(CorpusPaths(settings.opinions_data_dir).opinion_id_high_water, default={}) == {}
 
 
-def test_empty_opinion_set_allows_only_null_consolidator_output(
+def test_consolidation_schema_supports_independent_attach_and_revise_operations(
+    settings: Settings,
+    opinions_repo: Path,
+) -> None:
+    bundle = make_bundle(settings)
+    context = build_read_context(settings, bundle.run_dir)
+    output_type = build_consolidation_output_type(context)
+
+    independent = output_type.model_validate(
+        {"reasoning": "The candidate remains useful alone.", "decision": {"kind": "independent"}}
+    )
+    attach = output_type.model_validate(
+        {
+            "reasoning": "The existing text already states the candidate belief.",
+            "decision": {
+                "kind": "attach",
+                "existing_opinion_id": "opinion-000001",
+                "evidence_ids": ["rw:h0"],
+            }
+        }
+    )
+    revise = output_type.model_validate(
+        {
+            "reasoning": "The candidate completes the same belief.",
+            "decision": {
+                "kind": "revise",
+                "existing_opinion_id": "opinion-000001",
+                "revised_opinion_text": "  Complete revised opinion.  ",
+                "evidence_ids": ["rw:h0"],
+            }
+        }
+    )
+
+    assert independent.decision.kind == "independent"
+    assert attach.decision.kind == "attach"
+    assert revise.decision.kind == "revise"
+    assert revise.decision.revised_opinion_text == "Complete revised opinion."
+
+
+@pytest.mark.parametrize("reasoning", ["", "   ", "\n\t"])
+def test_consolidation_schema_rejects_empty_reasoning(
+    settings: Settings,
+    opinions_repo: Path,
+    reasoning: str,
+) -> None:
+    bundle = make_bundle(settings)
+    context = build_read_context(settings, bundle.run_dir)
+    output_type = build_consolidation_output_type(context)
+
+    with pytest.raises(ValidationError, match="must not be empty"):
+        output_type.model_validate({"reasoning": reasoning, "decision": {"kind": "independent"}})
+
+
+@pytest.mark.parametrize("revised_opinion_text", ["", "   ", "\n\t"])
+def test_consolidation_schema_rejects_empty_revision_sentinels(
+    settings: Settings,
+    opinions_repo: Path,
+    revised_opinion_text: str,
+) -> None:
+    bundle = make_bundle(settings)
+    context = build_read_context(settings, bundle.run_dir)
+    output_type = build_consolidation_output_type(context)
+
+    with pytest.raises(ValidationError, match="must not be empty"):
+        output_type.model_validate(
+            {
+                "reasoning": "The candidate completes the same belief.",
+                "decision": {
+                    "kind": "revise",
+                    "existing_opinion_id": "opinion-000001",
+                    "revised_opinion_text": revised_opinion_text,
+                    "evidence_ids": ["rw:h0"],
+                }
+            }
+        )
+
+
+def test_consolidation_schema_rejects_removed_opinion_text_field(
+    settings: Settings,
+    opinions_repo: Path,
+) -> None:
+    bundle = make_bundle(settings)
+    context = build_read_context(settings, bundle.run_dir)
+    output_type = build_consolidation_output_type(context)
+
+    with pytest.raises(ValidationError):
+        output_type.model_validate(
+            {
+                "reasoning": "The candidate completes the same belief.",
+                "decision": {
+                    "kind": "revise",
+                    "existing_opinion_id": "opinion-000001",
+                    "opinion_text": "Old field name.",
+                    "evidence_ids": ["rw:h0"],
+                }
+            }
+        )
+
+
+def test_empty_opinion_set_allows_only_independent_decision(
     settings: Settings,
     opinions_repo: Path,
 ) -> None:
@@ -319,16 +433,21 @@ def test_empty_opinion_set_allows_only_null_consolidator_output(
     context.opinions_md.write_text("# OPINIONS\n", encoding="utf-8")
     output_type = build_consolidation_output_type(context)
 
-    assert output_type.model_validate_json("null").root is None
+    result = output_type.model_validate(
+        {"reasoning": "There is no existing opinion to target.", "decision": {"kind": "independent"}}
+    )
+    assert result.decision.kind == "independent"
     with pytest.raises(ValidationError):
-        output_type.model_validate_json(
-            json.dumps(
-                {
+        output_type.model_validate(
+            {
+                "reasoning": "This target does not exist.",
+                "decision": {
+                    "kind": "revise",
                     "existing_opinion_id": "opinion-000001",
-                    "opinion_text": "No current opinion can be targeted.",
+                    "revised_opinion_text": "No current opinion can be targeted.",
                     "evidence_ids": ["rw:h0"],
                 }
-            )
+            }
         )
 
 

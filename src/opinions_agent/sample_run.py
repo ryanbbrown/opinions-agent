@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -18,6 +19,7 @@ from opinions_agent.corpus import (
 from opinions_agent.fsio import write_jsonl_atomic
 from opinions_agent.opinions_doc import load_opinions
 from opinions_agent.reader import parse_iso
+from opinions_agent.selection import apply_highlighted_at_overrides
 from opinions_agent.tools.git_ops import run_git
 
 
@@ -107,6 +109,7 @@ def prepare_sample_settings(
     run_id: str,
     opinions_file: Path,
     sources_file: Path | None = None,
+    highlighted_at_overrides: Mapping[str, datetime] | None = None,
 ) -> Settings:
     run_dir = (settings.runs_dir / "active" / run_id).resolve()
     if run_dir.exists():
@@ -114,7 +117,11 @@ def prepare_sample_settings(
     run_dir.mkdir(parents=True)
 
     sample_data = run_dir / "data"
-    _copy_sample_corpus(CorpusPaths(settings.opinions_data_dir), CorpusPaths(sample_data))
+    sample_corpus = CorpusPaths(sample_data)
+    _copy_sample_corpus(CorpusPaths(settings.opinions_data_dir), sample_corpus)
+    if highlighted_at_overrides:
+        highlights = apply_highlighted_at_overrides(read_highlights(sample_corpus), highlighted_at_overrides)
+        write_jsonl_atomic(sample_corpus.highlights_jsonl, [row.model_dump(mode="json") for row in highlights])
 
     sample_repo = run_dir / "opinions-repo"
     _init_sample_repo(
@@ -125,7 +132,7 @@ def prepare_sample_settings(
         author_email=settings.opinions_git_author_email,
         opinions_file=opinions_file,
         sources_file=sources_file,
-        corpus=CorpusPaths(sample_data),
+        corpus=sample_corpus,
     )
 
     return replace(

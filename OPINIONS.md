@@ -6,7 +6,7 @@
   <!-- opinion-id: opinion-000001 -->
   <!-- sources: rw:01kkvnzbr8p6g2vtr1wnxdf5g0, rw:01kkt3pncjjjsrs8dv3pa3g4tk, rw:01kkt4ee5w23y80yqwmy77xpr0 -->
 
-- Making code cheap to generate does not make system comprehension cheap to skip.
+- Making code cheap to generate can create comprehension debt when teams optimize for passing tests and merge velocity without maintaining genuine understanding.
   <!-- opinion-id: opinion-000002 -->
   <!-- sources: rw:01km6w5j2etpssfcbyjk75spx5, rw:01km6w6qb90sfan8c6dnfgrsx3 -->
 
@@ -38,26 +38,22 @@
   <!-- opinion-id: opinion-000008 -->
   <!-- sources: rw:01kncyqbhj7d8t10emepgzgt1s -->
 
-- AI commoditizes knowledge that can be specified or copied, while operational knowledge compounds in changing systems because staying current requires ongoing real-world learning. This moat disappears when the underlying system is replaced.
-  <!-- opinion-id: opinion-000009 -->
-  <!-- sources: rw:01knfjsc5qjmyf0jd2k8yedkwm, rw:01knfjyjpmmeh1wpv1a4z2dy88, rw:01knfk2f4x3c2ne8vn10x52rgp, rw:01knfk4zd7ca5tq7kf760jht7a -->
-
 - As substantive product differences become easier to copy, brand and production-grade trust become stronger moats: prototypes can copy features, but not a record of reliability, audits, change control, and incident response.
-  <!-- opinion-id: opinion-000010 -->
+  <!-- opinion-id: opinion-000009 -->
   <!-- sources: rw:01km6wb6fs62k46c08ymnb0aye, rw:01knfqmzt8f383ajbrs048naza -->
 
 ## Taste, Craft, And Signal
 
 - Taste matters more when implementation gets cheaper, because the constraint shifts from "can this be built?" to "is this coherent, polished, and worth caring about?"
-  <!-- opinion-id: opinion-000011 -->
+  <!-- opinion-id: opinion-000010 -->
   <!-- sources: rw:01kkt3bjqsny5edfmcbeertgxn, rw:01km6d48j613hq0c9n141x2d8s, rw:01km6d525k20c4d0wd7cnbys5e, rw:01knczdnkbndmvcm7v6qfcxyhp -->
 
 - When AI makes plausible output nearly costless, volume and customization stop signaling effort, care, or productivity; instead they create pressure to produce more simply to keep up.
-  <!-- opinion-id: opinion-000012 -->
+  <!-- opinion-id: opinion-000011 -->
   <!-- sources: rw:01km1mjh61x3a121avgb35ybmf, rw:01km6c0q40mev12z6d96mr7wtc, reader-note:01kkwkjsegskdveypma6jtppxa -->
 
 ## Career And Work
 
 - A corporate job does not need to be personally meaningful if it is useful: building skills, funding independent projects, or buying time for higher-conviction work.
-  <!-- opinion-id: opinion-000013 -->
+  <!-- opinion-id: opinion-000012 -->
   <!-- sources: rw:01knfjhr4hnp2exvcgpggvywsd -->

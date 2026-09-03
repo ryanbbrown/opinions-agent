@@ -2,24 +2,20 @@
 
 ## Current state
 
-The executable ground truth was corrected on 2026-08-27 after a full human review of every opinion and its evidence. The current scoring version is `2026-08-27-reviewed-ground-truth` in V1 and V2.
+The executable ground truth was last corrected on 2026-09-02. The current scoring version is `2026-09-02-w12-standalone` in V1 and V2.
 
 The corrected set has:
 
-- 13 opinions in the pre-W04 seed
-- 34 weekly targets: 31 adds and 3 updates
-- 44 opinions after applying all targets through W13
-- 63 converted weekly evidence rows and 75 not-converted rows
+- 12 opinions in the pre-W04 seed
+- 34 weekly targets: 33 adds and 1 update
+- 45 opinions after applying all targets through W13
+- 67 converted weekly evidence rows and 75 not-converted rows
 - 93 unique evidence rows assigned across the final opinions
 - no evidence row assigned to more than one opinion
 
-The three updates are:
+W04-01 is the only update. It updates `opinion-000003` with the high-quality-intent evidence.
 
-- W04-01 updates `opinion-000003` with the high-quality-intent evidence.
-- W08-05 updates `opinion-000009` with a Reality’s Moat reader note created during W08.
-- W12-01 updates `opinion-000002` with ownership and comprehension evidence.
-
-W13-05 is a standalone add about private eval sets and real user edge cases for AI products. It is separate from the seed opinion about private software test suites.
+W08-05 is a standalone Reality’s Moat opinion. Its four earlier highlights use a checked-in eval availability override so all five evidence rows first appear together in W08. W12-01 is a standalone accountability and review-culture opinion; it does not update the seed comprehension-debt opinion. W13-05 is a standalone add about private eval sets and real user edge cases for AI products. It is separate from the seed opinion about private software test suites.
 
 ## Comparability boundary
 
@@ -28,6 +24,8 @@ All experiment scores from earlier scoring versions are historical only. The see
 The previous V2 routing candidate was `v2-routing-threshold-r1`, but its 28/33 conceptual, 28/33 operation, and 24/33 V2 results used the old ground truth. It is not the current baseline.
 
 ## Current measurement
+
+[`eval/CURRENT_PERFORMANCE.md`](CURRENT_PERFORMANCE.md) records the current test-set and production-replay baseline, its manual review adjustments, and its limits.
 
 V2 now stores frozen post-critic candidates and reports `candidate_quality` against add targets only. This measures extraction before consolidation. Final `opinion_quality`, `operation_accuracy`, and `opinion_quality_v2` continue to measure Telegram proposals after consolidation.
 
@@ -42,7 +40,7 @@ Run all nine weeks before making a quality-promotion claim. A single smoke is en
 - One saved evidence row can have only one opinion home. Different highlights from the same article can support different opinions.
 - Every selected weekly evidence row must be either converted or not converted, never both.
 - V1 judges conceptual coverage. V2 also requires the labeled add or update operation.
-- `candidate_quality` grades the frozen post-critic candidate snapshot against add targets only; update targets are not extraction targets.
+- `candidate_quality` grades the frozen post-critic candidate snapshot against add targets only; W04-01 is excluded because extraction has not read the existing opinion needed to draft its revision.
 - The primary aggregate is the target-weighted pass fraction, not the mean of week means shown as the Braintrust headline.
 
 ## Operations

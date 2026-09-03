@@ -7,7 +7,9 @@ import pytest
 from conftest import seed_corpus
 
 from opinions_agent.agent import (
-    OpinionConsolidation,
+    AttachOpinionDecision,
+    IndependentOpinionDecision,
+    ReviseOpinionDecision,
     build_candidate_validation_tool,
     build_read_context,
     load_opinion_candidates,
@@ -120,39 +122,35 @@ async def test_candidate_validation_freezes_structure_while_allowing_critic_text
     assert "critic feedback may edit opinion_text only" in evidence_edit.content
 
 
-def test_null_consolidation_keeps_complete_candidate_new(settings: Settings, opinions_repo: Path) -> None:
-    context = make_context(settings)
-    write_jsonl_atomic(context.candidate_opinions_jsonl, [candidate("candidate-001", "rw:h0", "rw:h1")])
-
-    result = validate_consolidation(context=context, candidate_id="candidate-001", consolidation=None)
-
-    assert result.outcome == "new"
-    assert result.moved_evidence_ids == []
-    assert result.remaining_evidence_ids == ["rw:h0", "rw:h1"]
-
-
-def test_full_consolidation_moves_all_candidate_evidence(settings: Settings, opinions_repo: Path) -> None:
+def test_independent_decision_keeps_complete_candidate_new(settings: Settings, opinions_repo: Path) -> None:
     context = make_context(settings)
     write_jsonl_atomic(context.candidate_opinions_jsonl, [candidate("candidate-001", "rw:h0", "rw:h1")])
 
     result = validate_consolidation(
         context=context,
         candidate_id="candidate-001",
-        consolidation=OpinionConsolidation(
-            existing_opinion_id="opinion-000001",
-            opinion_text="Complete revised existing opinion.",
-            evidence_ids=["rw:h0", "rw:h1"],
-        ),
+        decision=IndependentOpinionDecision(kind="independent"),
     )
 
-    assert result.outcome == "full"
-    assert result.moved_evidence_ids == ["rw:h0", "rw:h1"]
-    assert result.remaining_evidence_ids == []
+    assert result.operation == "keep_new"
+    assert result.outcome == "new"
+    assert result.moved_evidence_ids == []
+    assert result.remaining_evidence_ids == ["rw:h0", "rw:h1"]
 
 
-def test_partial_consolidation_preserves_only_residual_evidence_for_new_candidate(
+@pytest.mark.parametrize(
+    ("evidence_ids", "outcome", "remaining_evidence_ids"),
+    [
+        (["rw:h0", "rw:h1"], "full", []),
+        (["rw:h1"], "partial", ["rw:h0"]),
+    ],
+)
+def test_attach_evidence_supports_full_and_partial_candidate_subsets(
     settings: Settings,
     opinions_repo: Path,
+    evidence_ids: list[str],
+    outcome: str,
+    remaining_evidence_ids: list[str],
 ) -> None:
     context = make_context(settings)
     write_jsonl_atomic(context.candidate_opinions_jsonl, [candidate("candidate-001", "rw:h0", "rw:h1")])
@@ -160,33 +158,70 @@ def test_partial_consolidation_preserves_only_residual_evidence_for_new_candidat
     result = validate_consolidation(
         context=context,
         candidate_id="candidate-001",
-        consolidation=OpinionConsolidation(
+        decision=AttachOpinionDecision(
+            kind="attach",
             existing_opinion_id="opinion-000001",
-            opinion_text="Complete revised existing opinion.",
-            evidence_ids=["rw:h1"],
+            evidence_ids=evidence_ids,
         ),
     )
 
-    assert result.outcome == "partial"
-    assert result.moved_evidence_ids == ["rw:h1"]
-    assert result.remaining_evidence_ids == ["rw:h0"]
+    assert result.operation == "attach_evidence"
+    assert result.outcome == outcome
+    assert result.moved_evidence_ids == evidence_ids
+    assert result.remaining_evidence_ids == remaining_evidence_ids
 
 
 @pytest.mark.parametrize(
-    ("consolidation", "error"),
+    ("evidence_ids", "outcome", "remaining_evidence_ids"),
+    [
+        (["rw:h0", "rw:h1"], "full", []),
+        (["rw:h1"], "partial", ["rw:h0"]),
+    ],
+)
+def test_revise_opinion_supports_full_and_partial_candidate_subsets(
+    settings: Settings,
+    opinions_repo: Path,
+    evidence_ids: list[str],
+    outcome: str,
+    remaining_evidence_ids: list[str],
+) -> None:
+    context = make_context(settings)
+    write_jsonl_atomic(context.candidate_opinions_jsonl, [candidate("candidate-001", "rw:h0", "rw:h1")])
+
+    result = validate_consolidation(
+        context=context,
+        candidate_id="candidate-001",
+        decision=ReviseOpinionDecision(
+            kind="revise",
+            existing_opinion_id="opinion-000001",
+            revised_opinion_text="Complete revised existing opinion.",
+            evidence_ids=evidence_ids,
+        ),
+    )
+
+    assert result.operation == "revise_opinion"
+    assert result.outcome == outcome
+    assert result.moved_evidence_ids == evidence_ids
+    assert result.remaining_evidence_ids == remaining_evidence_ids
+
+
+@pytest.mark.parametrize(
+    ("decision", "error"),
     [
         (
-            OpinionConsolidation(
+            ReviseOpinionDecision(
+                kind="revise",
                 existing_opinion_id="opinion-999999",
-                opinion_text="Unknown existing opinion.",
+                revised_opinion_text="Unknown existing opinion.",
                 evidence_ids=["rw:h0"],
             ),
             "existing opinion ID not found",
         ),
         (
-            OpinionConsolidation(
+            ReviseOpinionDecision(
+                kind="revise",
                 existing_opinion_id="opinion-000001",
-                opinion_text="Wrong evidence.",
+                revised_opinion_text="Wrong evidence.",
                 evidence_ids=["rw:h1"],
             ),
             "outside the candidate",
@@ -196,7 +231,7 @@ def test_partial_consolidation_preserves_only_residual_evidence_for_new_candidat
 def test_consolidation_rejects_unknown_opinions_and_out_of_candidate_evidence(
     settings: Settings,
     opinions_repo: Path,
-    consolidation: OpinionConsolidation,
+    decision: ReviseOpinionDecision,
     error: str,
 ) -> None:
     context = make_context(settings)
@@ -206,5 +241,5 @@ def test_consolidation_rejects_unknown_opinions_and_out_of_candidate_evidence(
         validate_consolidation(
             context=context,
             candidate_id="candidate-001",
-            consolidation=consolidation,
+            decision=decision,
         )

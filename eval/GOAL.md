@@ -23,7 +23,7 @@ The V2 eval runs the initial proposal phase for each eval week and produces eigh
 
 Weeks in scope: `W04 W05 W06 W07 W08 W10 W11 W12 W13`. W07 has no target opinions, so it only exercises precision — expect `opinion_quality` and `evidence_recall` to be null there.
 
-The current scoring version is `2026-08-27-reviewed-ground-truth`. The seed, canonical opinions, evidence partitions, concepts, and operation labels changed in this version, so older scores are historical only. `eval/STATUS.md` identifies the fresh baseline to run before the next prompt comparison.
+The current scoring version is `2026-09-02-w12-standalone`. W12-01 is now a standalone add rather than an update, so older scores are historical only. `eval/STATUS.md` identifies the fresh baseline to run before the next prompt comparison.
 
 ## Status and ledger files
 

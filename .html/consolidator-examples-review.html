@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Negative consolidator examples</title>
+  <style>
+    :root{color-scheme:light dark;--bg:#f3f1eb;--panel:#fffdf8;--ink:#202521;--muted:#68716b;--line:#d9d5ca;--red:#a33b31;--redbg:#fff0ed;--blue:#315c9b;--purple:#7656a6;--actual:#8a5a12;--actualbg:#fff8e8;--code:#252a27}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{width:min(1180px,calc(100% - 28px));margin:0 auto;padding:38px 0 72px}h1{margin:0 0 12px;font-size:clamp(32px,5vw,50px);line-height:1.04;letter-spacing:-.04em}h2{margin:0;font-size:23px;letter-spacing:-.02em}p{margin-top:0}.lede{max-width:900px;color:var(--muted);font-size:18px}.summary{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:24px 0}.summary div,.diagnosis,.card{background:var(--panel);border:1px solid var(--line);border-radius:16px}.summary div{padding:16px}.summary strong{display:block;margin-bottom:5px;font-size:29px;line-height:1}.summary span{color:var(--muted)}.diagnosis{padding:18px 20px;border-left:6px solid var(--red);margin-bottom:30px}.diagnosis p:last-child{margin-bottom:0}.card{margin-bottom:24px;padding:20px;box-shadow:0 7px 20px rgb(25 30 27/.05)}.head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:16px}.eyebrow{margin-bottom:4px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;font-size:12px;font-weight:800}.badge{flex:none;border-radius:999px;padding:5px 10px;color:var(--red);background:var(--redbg);border:1px solid #e1aaa4;font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.05em}.subhead{margin:18px 0 9px;font-size:15px;text-transform:uppercase;letter-spacing:.05em}.subhead.prompt{color:var(--purple)}.subhead.actual{color:var(--actual)}.pair{display:grid;grid-template-columns:1fr 1fr;gap:12px}.text{border:1px solid var(--line);border-top-width:4px;border-radius:12px;padding:14px}.text.existing{border-top-color:var(--blue)}.text.candidate{border-top-color:var(--purple)}.actual-pair .text{background:var(--actualbg)}.label{display:block;margin-bottom:7px;color:var(--muted);font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.06em}.text p{margin:0}.why{margin:12px 0;padding:13px 14px;border-radius:12px;background:var(--redbg);border-left:5px solid var(--red)}.why p{margin:0}.actual-note{margin:12px 0 0;padding:12px 14px;border-left:5px solid var(--actual);background:var(--actualbg);border-radius:12px}.actual-note p{margin:0}pre{overflow:auto;margin:0;padding:12px 14px;border-radius:12px;color:#f3f7f4;background:var(--code);font:14px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace}.approval{margin-top:30px;padding:18px;background:var(--panel);border:1px solid var(--line);border-radius:16px}.approval ul{margin-bottom:0}footer{margin-top:24px;color:var(--muted);font-size:13px}@media(prefers-color-scheme:dark){:root{--bg:#171a18;--panel:#202421;--ink:#eff4f0;--muted:#a8b2ac;--line:#3a403c;--redbg:#3b211f;--blue:#8ab8ff;--purple:#c6a4ff;--actual:#e2bb66;--actualbg:#362f20;--code:#111412}}@media(max-width:700px){.summary,.pair{grid-template-columns:1fr}.head{display:block}.badge{display:inline-block;margin-top:8px}}
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="eyebrow">Smoke-test prompt review</div>
+    <h1>Negative examples only</h1>
+    <p class="lede">Each section has two pairs. The first pair is a new, unrelated example now used in the smoke-test prompt. The second pair is an actual false consolidation from the full run. The actual pair shows exactly what the prompt example is meant to prevent.</p>
+    <div class="summary">
+      <div><strong>6</strong><span>negative prompt examples</span></div>
+      <div><strong>6</strong><span>actual run failures beside them</span></div>
+      <div><strong>0</strong><span>positive examples</span></div>
+    </div>
+    <section class="diagnosis">
+      <p><strong>Why start negative:</strong> the no-example consolidator returned an object for every visible call and never returned <code>null</code>. It already knows how to invent merges. These examples teach the missing action: leave two useful beliefs separate.</p>
+      <p><strong>Decision rule:</strong> the ability to write one broad sentence containing both claims does not make them one belief. Return <code>null</code> when each claim remains a useful answer to a different question.</p>
+    </section>
+  </header>
+
+  <article class="card">
+    <div class="head"><div><div class="eyebrow">Negative class 1</div><h2>Same family, different decision</h2></div><span class="badge">Return null</span></div>
+    <div class="subhead prompt">Proposed prompt example</div>
+    <div class="pair">
+      <div class="text existing"><span class="label">Existing</span><p>Bread dough should ferment slowly in a refrigerator because time develops flavor.</p></div>
+      <div class="text candidate"><span class="label">Candidate</span><p>Steam during the first minutes of baking keeps a loaf’s crust flexible so the loaf can expand.</p></div>
+    </div>
+    <div class="why"><p><strong>Why null:</strong> fermentation timing and oven steam answer different questions. Each belief remains independently useful.</p></div>
+    <pre>{"decision": {"kind": "independent"}}</pre>
+    <div class="subhead actual">Actual false consolidation · W13 candidate 009</div>
+    <div class="pair actual-pair">
+      <div class="text existing"><span class="label">Existing opinion 000004</span><p>Private test suites can be more durable than the generated implementation they verify; SQLite’s closed test suite is a clearer moat than its open-source core.</p></div>
+      <div class="text candidate"><span class="label">Candidate</span><p>As public software artifacts become cheap to distill, defensibility shifts to the private eval set competitors cannot score against, the edge cases only real users reveal, and the proprietary ground truth that defines what good means.</p></div>
+    </div>
+    <div class="actual-note"><p><strong>Same rule:</strong> private software test suites and private AI-product eval sets belong to the same validation family, but they make separate claims about different artifacts. The run forced them into one “eval and test suites” opinion.</p></div>
+  </article>
+
+  <article class="card">
+    <div class="head"><div><div class="eyebrow">Negative class 2</div><h2>Same outcome, different lever</h2></div><span class="badge">Return null</span></div>
+    <div class="subhead prompt">Proposed prompt example</div>
+    <div class="pair">
+      <div class="text existing"><span class="label">Existing</span><p>Bedrooms should use blackout curtains when early morning light interrupts sleep.</p></div>
+      <div class="text candidate"><span class="label">Candidate</span><p>People who struggle to fall asleep should stop drinking caffeine at least eight hours before bedtime.</p></div>
+    </div>
+    <div class="why"><p><strong>Why null:</strong> both can improve sleep, but one addresses light and the other addresses stimulant use. Neither belief supports, replaces, or completes the other.</p></div>
+    <pre>{"decision": {"kind": "independent"}}</pre>
+    <div class="subhead actual">Actual false consolidation · W13 candidate 006</div>
+    <div class="pair actual-pair">
+      <div class="text existing"><span class="label">Existing opinion 000009</span><p>AI commoditizes knowledge that can be specified or copied, while operational scar tissue compounds in coupled, changing systems because each real-world surprise changes both the system and how future surprises should be interpreted.</p></div>
+      <div class="text candidate"><span class="label">Candidate</span><p>Anything measurable on a public leaderboard can be trained against and is moving toward commodity. Durable value shifts toward work whose correctness is private, expensive, slow to establish, and embedded in proprietary data, workflows, relationships, trust, permission, and accountability.</p></div>
+    </div>
+    <div class="actual-note"><p><strong>Same rule:</strong> both discuss durable advantage, but one is about operational scar tissue in changing systems and the other is about public measurability versus private judgment. The run created a broad moat umbrella instead of preserving both tests.</p></div>
+  </article>
+
+  <article class="card">
+    <div class="head"><div><div class="eyebrow">Negative class 3</div><h2>Related application remains independently useful</h2></div><span class="badge">Return null</span></div>
+    <div class="subhead prompt">Proposed prompt example</div>
+    <div class="pair">
+      <div class="text existing"><span class="label">Existing</span><p>Garden beds should be covered with mulch because bare soil loses water quickly.</p></div>
+      <div class="text candidate"><span class="label">Candidate</span><p>Dry-climate gardens should favor native drought-tolerant plants to reduce irrigation demand.</p></div>
+    </div>
+    <div class="why"><p><strong>Why null:</strong> plant choice is related to water conservation, but it is not evidence for the mulch claim. Each recommendation remains actionable alone.</p></div>
+    <pre>{"decision": {"kind": "independent"}}</pre>
+    <div class="subhead actual">Actual false consolidation · W13 candidate 005</div>
+    <div class="pair actual-pair">
+      <div class="text existing"><span class="label">Existing opinion 000019</span><p>Agent systems should keep the harness thin, put reusable judgment and process in skills, and push repeatable execution into deterministic tools so model improvements compound without making reliability depend on the model.</p></div>
+      <div class="text candidate"><span class="label">Candidate</span><p>A good vertical agent is a faithful compression of its users’ task distribution. Put common operations in a token-efficient first layer, occasional capabilities in curated specs on demand, and the long-tail substrate in a searchable bounded layer.</p></div>
+    </div>
+    <div class="actual-note"><p><strong>Same rule:</strong> layered context is a related agent-design application, but it is not the same belief as thin harnesses, skills, and deterministic tools. The run rewrote the existing opinion to absorb the complete context-hierarchy proposal.</p></div>
+  </article>
+
+  <article class="card">
+    <div class="head"><div><div class="eyebrow">Negative class 4</div><h2>A generic umbrella is not a canonical belief</h2></div><span class="badge">Return null</span></div>
+    <div class="subhead prompt">Proposed prompt example</div>
+    <div class="pair">
+      <div class="text existing"><span class="label">Existing</span><p>Choirs should rehearse difficult entrances without accompaniment because exposed practice reveals timing errors.</p></div>
+      <div class="text candidate"><span class="label">Candidate</span><p>Concert halls should add acoustic panels when long echoes make lyrics hard for an audience to understand.</p></div>
+    </div>
+    <div class="why"><p><strong>Why null:</strong> “musical clarity requires managing timing and sound” can mention both, but that umbrella is less useful than either precise belief.</p></div>
+    <pre>{"decision": {"kind": "independent"}}</pre>
+    <div class="subhead actual">Actual false consolidation · W04 candidate 006</div>
+    <div class="pair actual-pair">
+      <div class="text existing"><span class="label">Existing opinion 000013</span><p>A corporate job does not need to be personally meaningful if it is useful: building skills, funding independent projects, or buying time for higher-conviction work.</p></div>
+      <div class="text candidate"><span class="label">Candidate</span><p>In a technical interview, a great accomplishment can be wasted by poor delivery. Behavioral stories deserve deliberate rehearsal so candidates can clearly show how they work while preserving the hard moments and close calls.</p></div>
+    </div>
+    <div class="actual-note"><p><strong>Same rule:</strong> “career progress depends on useful work and presenting value” is only a generic career umbrella. Job utility and interview delivery remain distinct beliefs.</p></div>
+  </article>
+
+  <article class="card">
+    <div class="head"><div><div class="eyebrow">Negative class 5</div><h2>Same system, neighboring policy</h2></div><span class="badge">Return null</span></div>
+    <div class="subhead prompt">Proposed prompt example</div>
+    <div class="pair">
+      <div class="text existing"><span class="label">Existing</span><p>Cities should price curb parking to keep one or two spaces open on each block.</p></div>
+      <div class="text candidate"><span class="label">Candidate</span><p>Cities should convert some curb parking into loading zones to reduce double parking by delivery vehicles.</p></div>
+    </div>
+    <div class="why"><p><strong>Why null:</strong> parking prices and loading-space allocation are separate policy decisions, even though both use the curb.</p></div>
+    <pre>{"decision": {"kind": "independent"}}</pre>
+    <div class="subhead actual">Actual false consolidation · W13 candidate 007</div>
+    <div class="pair actual-pair">
+      <div class="text existing"><span class="label">Existing opinion 000035</span><p>Reliable agent harnesses should not treat bash or arbitrary code execution as universally necessary; many enterprise tasks are better served by task-specific, constrained tools.</p></div>
+      <div class="text candidate"><span class="label">Candidate</span><p>An autonomous agent will exploit every cheap path left open by its objective. Effective loss-function development needs a blind target, explicit constraints, instruments that expose those constraints, and forced entropy to resist overfitting.</p></div>
+    </div>
+    <div class="actual-note"><p><strong>Same rule:</strong> constrained tools and loss-function design both affect agent safety, but one chooses the execution interface while the other specifies and observes the optimization target.</p></div>
+  </article>
+
+  <article class="card">
+    <div class="head"><div><div class="eyebrow">Negative class 6</div><h2>Scope changed to manufacture a match</h2></div><span class="badge">Return null</span></div>
+    <div class="subhead prompt">Proposed prompt example</div>
+    <div class="pair">
+      <div class="text existing"><span class="label">Existing</span><p>Public libraries should remove late fees from children’s books because fines block access for families.</p></div>
+      <div class="text candidate"><span class="label">Candidate</span><p>Academic libraries should charge replacement fees for rare loaned equipment because the equipment is costly and shared.</p></div>
+    </div>
+    <div class="why"><p><strong>Why null:</strong> merging would broaden both the institution and the resource while hiding opposite access and accountability decisions.</p></div>
+    <pre>{"decision": {"kind": "independent"}}</pre>
+    <div class="subhead actual">Actual false consolidation · W04 candidate 001</div>
+    <div class="pair actual-pair">
+      <div class="text existing"><span class="label">Existing opinion 000007</span><p>Local AI will not match frontier cloud AI for the hardest work, but it can still handle enough tasks to weaken cloud compute as a universal moat.</p></div>
+      <div class="text candidate"><span class="label">Candidate</span><p>Domain-specific models are unlikely to beat general models reliably because intelligence compounds across domains. Specialization becomes plausible mainly if physical limits constrain model scale.</p></div>
+    </div>
+    <div class="actual-note"><p><strong>Same rule:</strong> local-versus-cloud deployment and domain-specific-versus-general intelligence are different comparisons. The run broadened both into one frontier-model opinion to force a match.</p></div>
+  </article>
+
+  <section class="approval">
+    <h2>Approval questions</h2>
+    <ul>
+      <li>Does each generic prompt example clearly match the actual failure beneath it?</li>
+      <li>Are any of the actual pairs beliefs you would prefer to consolidate after all?</li>
+      <li>Should all six negative examples enter the prompt, or should any class be removed?</li>
+    </ul>
+  </section>
+
+  <footer>Only the generic pairs are in the smoke-test prompt. The actual run pairs are review context and are not copied into the prompt.</footer>
+</main>
+</body>
+</html>
