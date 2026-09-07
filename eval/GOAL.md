@@ -10,20 +10,22 @@ Read `eval/STATUS.md` and `eval/experiments.md` before every experiment so you s
 
 ## Metrics
 
-The V2 eval runs the initial proposal phase for each eval week and produces eight scores:
+The V2 eval runs the initial proposal phase for each eval week and produces ten scores:
 
-- `opinion_quality_v2` — **primary.** A target passes only when the final proposal covers the canonical concepts and uses the labeled add or update operation.
-- `candidate_quality` — pre-consolidation diagnostic. The existing conceptual judge grades the frozen post-critic candidate snapshot against add targets only. Update targets are excluded because extraction has not yet read the existing opinion needed to draft the final revision.
-- `opinion_quality` — conceptual component. A proposal passes when it carries all required concepts and takes the canonical stance; extra elaboration does not fail by itself.
-- `operation_accuracy` — deterministic operation component. Add targets require adds; update targets require revisions of the named base opinion.
-- `opinion_attempted` — diagnostic funnel layer beneath quality: a target counts as attempted when its matched proposal expresses the same central claim, even if concepts were dropped.
+- `opinion_quality_v2` — **primary.** A target passes only when the final opinion set covers the canonical concepts and routes all its evidence through the labeled add or update operation.
+- `candidate_quality` — pre-consolidation diagnostic. The conceptual judge grades the complete frozen post-critic candidate set against add targets. One candidate can cover several targets, and several candidates can together cover one target. Update targets remain excluded because their canonical text includes the existing opinion that extraction has not read.
+- `candidate_independent_quality` — pre-consolidation approval-unit diagnostic. An add target passes only when at least one evidence-linked candidate independently covers all its required concepts. Extra candidates do not make a passing target fail.
+- `candidate_grouping` — deterministic pre-consolidation diagnostic. Pairwise F1 compares the candidate evidence partition with the target partition. Metadata separates over-merged from under-merged evidence pairs.
+- `opinion_quality` — conceptual component. The evidence-linked final opinion set passes when it collectively carries all required concepts and takes the canonical stance; splitting and merging do not affect this score.
+- `operation_accuracy` — deterministic operation component. All evidence for add targets must route through adds; all evidence for update targets must route through revisions of the named base opinion.
+- `opinion_attempted` — diagnostic funnel layer beneath quality: a target counts as attempted when its evidence-linked opinion set expresses the same central claim, even if concepts were dropped.
 - `evidence_recall` — guardrail. Fraction of ground-truth-converted evidence the proposals cited.
 - `evidence_precision` — guardrail. Fraction of cited in-week evidence that ground truth also converts.
 - `opinion_brevity` — reference. Mean proposal length versus the week's mean golden-target length.
 
 Weeks in scope: `W04 W05 W06 W07 W08 W10 W11 W12 W13`. W07 has no target opinions, so it only exercises precision — expect `opinion_quality` and `evidence_recall` to be null there.
 
-The current scoring version is `2026-09-02-w12-standalone`. W12-01 is now a standalone add rather than an update, so older scores are historical only. `eval/STATUS.md` identifies the fresh baseline to run before the next prompt comparison.
+The current V2 scoring version is `2026-09-07-w11-workflow-split`. Older scores are historical because they used a different conceptual matching contract or the earlier combined W11 workflow target.
 
 ## Status and ledger files
 
@@ -33,7 +35,7 @@ The current scoring version is `2026-09-02-w12-standalone`. W12-01 is now a stan
 
 ## Edit scope
 
-- Preferred edit targets are `src/opinions_agent/prompts.py` and `RULES.md`.
+- The preferred edit target is `src/opinions_agent/prompts.py`.
 - You may edit the agent/critic harness when the experiment hypothesis requires new critic behavior, critic context, proposal routing, or coverage machinery. Keep those changes as small as possible and test prompt construction/tool behavior directly.
 - Swapping the drafter model for a screen run is measurement, not an optimization lever. The production target model is `openai:gpt-5.6-sol` at medium effort.
 - Never edit `src/opinions_agent/evals/` (scorers, runner, targets), `eval/opinion_targets.*`, or `OPINIONS.md` as an experiment lever. Changing the scorer or the targets games the metric instead of improving the agent. Temporary copied scorer/runner changes inside a disposable worktree are acceptable only for measurement reliability, such as bypassing a cached malformed judge response; record that caveat in the ledger.
@@ -50,10 +52,10 @@ If you are unsure whether an edit leaks, assume it does and generalize it.
 
 ## Keep the prompts lean
 
-Simplicity, clarity, and conciseness are optimization targets, not afterthoughts. The failure mode of a blind optimization loop is a prompt that only ever grows: each experiment bolts on another instruction until `prompts.py` and `RULES.md` become a bloated, contradictory mess that reads worse and scores worse. Guard against it:
+Simplicity, clarity, and conciseness are optimization targets, not afterthoughts. The failure mode of a blind optimization loop is a prompt that only ever grows: each experiment bolts on another instruction until `prompts.py` becomes a bloated, contradictory mess that reads worse and scores worse. Guard against it:
 
 - Prefer edits that **remove, rewrite, or consolidate** over edits that only append. A change that lifts a score by sharpening or deleting existing text is worth more than one that adds a paragraph.
-- Before adding an instruction, check whether `prompts.py` or `RULES.md` already covers it or contradicts it. Fix or replace the existing text instead of layering a second version on top.
+- Before adding an instruction, check whether `prompts.py` already covers it or contradicts it. Fix or replace the existing text instead of layering a second version on top.
 - Treat length as a cost. A shorter or equal-length variant that holds its scores is better than a longer one, and is worth promoting on that basis alone.
 - Watch for instructions that pull against each other. Contradictions confuse the agent and can lower scores more than a new instruction helps.
 
@@ -92,7 +94,7 @@ The current best starts as `main` (the committed eval harness with unmodified pr
    cp .env .worktrees/<exp>/.env
    ```
    Branching from the current-best branch inherits every earlier promoted change. When `eval/STATUS.md` pins a round base branch (e.g. a critic-less base), branch from that instead; the promotion bar still comes from the ledger header.
-3. In the worktree, edit the minimal files needed for the hypothesis, respecting the anti-leakage rules. Prefer `prompts.py` and/or `RULES.md`; use agent/critic harness edits only when the experiment is about critic behavior, critic context, proposal routing, or coverage.
+3. In the worktree, edit the minimal files needed for the hypothesis, respecting the anti-leakage rules. Prefer `prompts.py`; use agent/critic harness edits only when the experiment is about critic behavior, critic context, proposal routing, or coverage.
 4. From the main checkout, run the leakage tripwire: `uv run python eval/check_leakage.py .worktrees/<exp>`. It flags word n-grams newly added to the lever files (relative to main) that also appear in the test set. Review every hit and generalize any real leak before proceeding. It only catches verbatim and near-verbatim leaks, so the anti-leakage rules above still apply in full.
 5. Commit the change to the experiment's own branch — never main: `git -C .worktrees/<exp> commit -am "exp/<exp>: <hypothesis>"`. Committing is what lets a later experiment build on this one.
 6. Run the eval from the worktree, pointing at the shared corpus (the gitignored `.readwise` lives only in the main checkout) and naming the variant:
@@ -102,7 +104,7 @@ The current best starts as `main` (the committed eval harness with unmodified pr
      --weeks W04 W05 W06 W07 W08 W10 W11 W12 W13 \
      --variant <exp>
    ```
-   The experiment is named `<exp>-r1` and stamped with `variant`, `run`, and `scoring_version` metadata (`scoring_version` is the runner's pinned constant marking which targets/judges graded the run — experiments are score-comparable only within the same value). Runs dir, sqlite DB, seeded `OPINIONS.md`, `RULES.md`, and targets all resolve inside the worktree.
+   The experiment is named `<exp>-r1` and stamped with `variant`, `run`, and `scoring_version` metadata (`scoring_version` is the runner's pinned constant marking which targets/judges graded the run — experiments are score-comparable only within the same value). Runs dir, sqlite DB, seeded `OPINIONS.md`, prompt source, and targets all resolve inside the worktree.
 
    Screens use the pinned subset weeks from `eval/STATUS.md` instead of the full list. For the sol screen of the same variant, prefix the run with `OPINION_AGENT_MODEL=openai:gpt-5.6-sol` and use `--variant <exp>-sol` (the drafter model and `OPINION_AGENT_REASONING_EFFORT` are env-overridable as of main's config change; they read the shell environment, not `.env`). Give concurrent runs distinct `RUNS_DIR` values — two processes sharing a run dir voided a pair of ablation runs.
 7. Read the scores with `eval/inspect_experiment.py` (see Reading results), then apply the screen→replicate rule from Validity and promotion. Replication reruns reuse the same worktree with `--run 2`/`--run 3` (naming the experiments `<exp>-r2`/`-r3`).

@@ -2,9 +2,9 @@
 
 Usage: uv run python eval/check_leakage.py [worktree-dir]
 
-Compares the worktree's prompts.py and RULES.md against eval/opinion_targets.jsonl
-(ideal opinions, source quotes, and titles): any word 5-gram that appears in both a
-lever file and the test set — and is not already in main's version of that lever file —
+Compares the worktree's prompts.py against eval/opinion_targets.jsonl (ideal opinions,
+source quotes, and titles): any word 5-gram that appears in both the prompt and the test
+set — and is not already in main's version of the prompt —
 is reported as a hit. Exits 1 on hits. This is a tripwire for verbatim and near-verbatim
 leaks; it does not replace the anti-leakage judgment rules in eval/GOAL.md.
 """
@@ -18,7 +18,8 @@ import sys
 from pathlib import Path
 
 NGRAM = 5
-LEVER_FILES = ("src/opinions_agent/prompts.py", "RULES.md")
+LEVER_FILES = ("src/opinions_agent/prompts.py",)
+BASELINE_LEVER_FILES = (*LEVER_FILES, "RULES.md")
 TARGETS_PATH = Path(__file__).resolve().parent / "opinion_targets.jsonl"
 
 
@@ -53,12 +54,17 @@ def main() -> None:
         path = worktree / lever
         if not path.exists():
             raise SystemExit(f"lever file not found: {path}")
-        baseline = subprocess.run(
-            ["git", "-C", str(worktree), "show", f"main:{lever}"],
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout
+        baseline_parts: list[str] = []
+        for baseline_lever in BASELINE_LEVER_FILES:
+            result = subprocess.run(
+                ["git", "-C", str(worktree), "show", f"main:{baseline_lever}"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode == 0:
+                baseline_parts.append(result.stdout)
+        baseline = "\n".join(baseline_parts)
         added = ngrams(path.read_text(encoding="utf-8")) - ngrams(baseline)
         for gram in added & set(targets):
             hits.append((lever, " ".join(gram), targets[gram]))

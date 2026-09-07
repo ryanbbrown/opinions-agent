@@ -9,6 +9,7 @@ from conftest import seed_corpus
 from opinions_agent.agent import (
     AttachOpinionDecision,
     IndependentOpinionDecision,
+    NativeAgentTurnOutput,
     ReviseOpinionDecision,
     build_candidate_validation_tool,
     build_read_context,
@@ -48,6 +49,31 @@ def candidate(candidate_id: str, *evidence_ids: str) -> dict:
     }
 
 
+def test_native_agent_output_requires_explicit_message_controls() -> None:
+    from thinharness import NativeOutput
+    from thinharness.output import OutputSchema
+
+    output_schema = OutputSchema.build(NativeOutput(NativeAgentTurnOutput), "native")
+    request = output_schema.structured_output_request()
+    message_schema = output_schema.schema["properties"]["telegram_messages"]["items"]
+
+    assert request is not None
+    assert request.strict is True
+    assert set(message_schema["required"]) == {"text", "buttons", "force_reply"}
+    assert (
+        NativeAgentTurnOutput.model_validate(
+            {
+                "status": "done",
+                "telegram_messages": [{"text": "Done.", "buttons": [], "force_reply": False}],
+                "notes": "",
+            }
+        )
+        .telegram_messages[0]
+        .buttons
+        == []
+    )
+
+
 def test_candidate_jsonl_round_trips_and_preserves_one_evidence_owner(
     settings: Settings,
     opinions_repo: Path,
@@ -68,6 +94,17 @@ def test_empty_candidate_file_is_valid(settings: Settings, opinions_repo: Path) 
     assert load_opinion_candidates(context) == []
 
 
+def test_candidate_file_accepts_ninety_word_opinion(settings: Settings, opinions_repo: Path) -> None:
+    context = make_context(settings)
+    opinion_text = " ".join(f"word{index}" for index in range(90))
+    write_jsonl_atomic(
+        context.candidate_opinions_jsonl,
+        [{**candidate("candidate-001", "rw:h0"), "opinion_text": opinion_text}],
+    )
+
+    assert load_opinion_candidates(context)[0].opinion_text == opinion_text
+
+
 @pytest.mark.parametrize(
     ("rows", "error"),
     [
@@ -83,6 +120,15 @@ def test_empty_candidate_file_is_valid(settings: Settings, opinions_repo: Path) 
         (
             [{**candidate("candidate-001", "rw:h0"), "opinion_text": "  "}],
             "must not be empty",
+        ),
+        (
+            [
+                {
+                    **candidate("candidate-001", "rw:h0"),
+                    "opinion_text": " ".join(f"word{index}" for index in range(91)),
+                }
+            ],
+            "must contain at most 90 words",
         ),
     ],
 )

@@ -52,7 +52,7 @@ Each opinion run deterministically selects the evidence window, writes an inspec
 - RUN-6: A created run writes an active run bundle under `RUNS_DIR/active/<run_id>/`.
 - RUN-7: The active run bundle contains `selected-highlights.jsonl`, `selected-documents.jsonl`, and a `review/` directory for human-readable review artifacts.
 - RUN-7A: `selected-highlights.jsonl` is the selected evidence file. It may contain Reader highlights, document-level notes, and synthesized tagged document-summary evidence with IDs using the `reader-summary:<reader_id>` form.
-- RUN-7B: The main agent writes independent opinion candidates to `candidate-opinions.jsonl` in the active run directory before comparing them with existing opinions. Each selected evidence item can support at most one candidate.
+- RUN-7B: The main agent writes independent opinion candidates of at most 90 words to `candidate-opinions.jsonl` in the active run directory before the consolidator compares them with existing opinions. Each selected evidence item can support at most one candidate.
 - RUN-7C: Candidate files are temporary run working state. They do not create a recovery checkpoint; a failed-run retry recreates them through a new extraction attempt.
 - RUN-7D: The candidate file freezes as an immutable post-critic extraction snapshot after critic validation. A full evidence move does not delete its candidate row, and a partial evidence move does not remove evidence from its candidate row.
 - RUN-8: Human review artifacts include the run summary and initial Telegram message transcript; they are for inspection and are not part of the agent read surface.

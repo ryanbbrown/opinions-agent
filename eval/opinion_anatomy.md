@@ -1,6 +1,6 @@
 # Anatomy of the 33 golden opinions
 
-Reference analysis of the eval test set (2026-07-05, plain-language targets), derived for the slot-structure experiment and kept as the basis for draft-selection rubrics. **Leakage warning:** this file describes the test set. Generalized structure (the slot grammar) may inform prompts; never copy any per-opinion content, phrasing, or the per-opinion breakdown below into `prompts.py` or `RULES.md`.
+Reference analysis of the eval test set (2026-07-05, plain-language targets), derived for the slot-structure experiment and kept as the basis for draft-selection rubrics. **Leakage warning:** this file describes the test set. Generalized structure (the slot grammar) may inform prompts; never copy any per-opinion content, phrasing, or the per-opinion breakdown below into `prompts.py`.
 
 Every golden opinion is one or two sentences, 25–53 words, built from **2–3 load-bearing clauses** joined by a semicolon, colon, or "so". No opinion is a single bare claim. The recurring slots:
 

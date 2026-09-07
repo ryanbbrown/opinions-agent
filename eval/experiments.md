@@ -531,3 +531,34 @@ Each entry records:
 - **Candidate quality:** **11/12 = 0.917**: W04 4/4, W06 3/4, W08 4/4. W06-01 failed only because the draft did not explicitly carry the checklist judgment that Figma is in an awkward position. This is in line with the two earlier add-only full runs, 28/31 = 0.903 and 29/31 = 0.935.
 - **Final-stage diagnostic:** The same three generations scored 14/14 conceptual quality but only 3/14 operation accuracy and V2 quality. The new metric therefore separates healthy extraction from poor consolidation instead of allowing final routing to obscure candidate quality.
 - **Verdict:** The measurement path works and the smoke shows no candidate-quality regression from adding consolidation instructions. This is a small single sample; use a complete full run before making a quality-promotion claim.
+
+### Concise candidate and grouping iterations (2026-09-07)
+
+- **Scope:** W04, W08, W10, W11, and W13 on GPT-5.6 Sol and Claude Opus 5 at medium effort. The targets were not changed. Every variant enforced a 90-word candidate maximum in validation. Leakage scans passed.
+- **Iteration 1:** Replaced exhaustive fidelity wording with a short argument-preservation rule and told the writer to group by canonical belief. GPT scored candidate quality 21/22, final concept quality 21/23, grouping 92.0%, and max length 76 words. Opus scored 19/22, 20/23, 81.6%, and max length 89 words.
+- **Iteration 2:** Defined separate beliefs more aggressively and relaxed the critic's named-specific check. GPT fell to 18/22 candidate and 17/23 final quality. Opus fell to 17/22 and 18/23, while grouping collapsed to 49.9% because it treated supporting details as independent beliefs. Reject.
+- **Iteration 3:** Restored the critic and expanded the grouping rule to name claims, mechanisms, bounds, consequences, and examples. GPT scored 20/22 candidate quality, 20/23 final quality, and 96.0% grouping. Opus scored 20/22 and 21/23 after a W10 provider-error retry, but only 73.4% grouping. Both models produced the same pooled concept totals as iteration 1, while iteration 1 was shorter and had better cross-model grouping and routing.
+- **Reviewed-label comparison:** If W08-05 permits a separate continued-learning belief and W11-02 permits three separate decisions, adjusted grouping does not change the conclusion. Iteration 1 averages 87.2% across the two models, iteration 2 averages 75.1%, and iteration 3 averages 86.7%. Treating W11-04's network evidence as a separate belief moves all variants only slightly. Correcting its contradictory brand concept changes only one iteration-2 Opus text failure.
+- **Verdict:** Keep iteration 1. It removes the unacceptable 100–225-word candidates without a pooled concept-quality loss. The remaining grouping differences concentrate in reviewed ambiguous targets or model variance, not one clear general instruction defect. Do not add more prompt rules from this subset.
+
+### Concise candidate full validation (2026-09-07)
+
+- **Run:** `concise90-i1-gpt-5.6-sol-full-20260907`, all nine weeks, GPT-5.6 Sol at medium effort. No week or model call failed.
+- **Scores:** candidate quality 31/33, final concept quality 32/34, operation accuracy 31/34, operation-gated quality 29/34, and candidate grouping 91.25%. Evidence recall was 100%.
+- **Length:** 84 generated candidates had a mean of 51.3 words, median of 49.5, and maximum of 81. The validator's 90-word maximum was never reached or exceeded in final candidates. The prior compact-contract GPT screen averaged 76.5 words and reached 212 words.
+- **Concept misses:** W06-01 captured the code-as-source-of-truth argument but omitted Figma's awkward position. W13-01 captured frequency-based context tiers but omitted the complete searchable-reference fallback.
+- **Strict routing misses:** W08-04, W13-04, and W13-05 were revisions where the labels require adds. Earlier review already accepted the W08-04 and W13-05 revisions as reasonable. W13-04 remains a strict miss pending review.
+- **Grouping:** W05-02 split thin-harness architecture from the procedure for turning repeated work into a skill. W11-02 split workflow mapping, migration policy, and data layers. W11-04 split network-building from the broader career-assets claim. All other scored weeks matched the target partitions exactly. Applying the previously discussed alternative partitions changes overall grouping only slightly, from 91.25% to 91.48%.
+- **Verdict:** The full run validates iteration 1 as the current GPT prompt. It keeps every candidate under the product limit while improving strict concept quality to 32/34. The remaining strict grouping and routing disagreements are concentrated in reviewed or plausible target ambiguities rather than a new general prompt failure.
+
+### Independent candidate quality metric (2026-09-07)
+
+- **Eval change:** Added `candidate_independent_quality`. An add target passes when at least one evidence-linked frozen candidate independently covers every required concept. This differs from `candidate_quality`, which lets several candidates cover a target collectively. Extra candidates do not make an independently complete target fail.
+- **Score:** The concise-90 iteration-1 full GPT run scored **30/33 = 90.9%**, compared with collective candidate quality of 31/33. W05-02 passes through candidate 001 and W11-04 passes through candidate 014. W11-02 is the only new failure exposed by the metric because its required concepts are split across candidates 004 and 011. W06-01 and W13-01 remain the two shared concept failures.
+- **Infrastructure:** The first rescore fetched only six of nine eval rows because the Braintrust fetch response exceeded 1,000 events. V2 rescore now follows the response cursor. The complete canonical rescore is `concise90-i1-gpt-5.6-sol-full-20260907-independent-quality-full`; the earlier name without `-full` is incomplete.
+
+### W11 workflow target split (2026-09-07)
+
+- **Ground-truth correction:** Split the former W11-02 checklist into two independently useful opinions. W11-02 now covers mapping workflows, prioritizing by ROI, encoding tribal knowledge, and evaluating intermediate checkpoints. W11-06 covers layering AI onto existing systems instead of forcing rip-and-replace migrations. The data-layer highlight moved to not converted; two workflow-audit highlights moved into W11-02.
+- **Rescore:** `concise90-i1-gpt-5.6-sol-full-20260907-w11-split-rescore`, using the stored nine-week GPT generation. Collective candidate quality and independent candidate quality are both **32/34 = 94.1%**. Final concept quality is **33/35 = 94.3%**, operation accuracy **32/35 = 91.4%**, operation-gated quality **30/35 = 85.7%**, and grouping **92.86%**.
+- **Read:** Candidates 004 and 011 each pass their new target independently. Candidate 012 is now an extra proposal against not-converted evidence. The only independent candidate failures are the existing W06-01 and W13-01 concept omissions.

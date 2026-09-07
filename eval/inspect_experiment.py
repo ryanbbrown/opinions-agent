@@ -20,6 +20,7 @@ from opinions_agent.config import get_settings
 
 SCORE_KEYS = (
     "candidate_quality",
+    "candidate_independent_quality",
     "opinion_quality_v2",
     "opinion_quality",
     "operation_accuracy",

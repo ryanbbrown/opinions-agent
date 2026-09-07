@@ -22,8 +22,10 @@ from opinions_agent.evals.targets import (
 )
 from opinions_agent.evals.v2.proposals import parse_proposals
 from opinions_agent.evals.v2.scorers import (
+    candidate_grouping,
     evidence_precision,
     evidence_recall,
+    make_candidate_independent_quality_judge,
     make_candidate_quality_judge,
     make_opinion_judges,
     opinion_brevity,
@@ -43,7 +45,7 @@ TARGETS_DATASET_NAME = "opinion-targets-v2"
 # one value. Bump on any change that alters existing scores (target text, judge prompt or
 # model, scorer code); adding a new metric is not a bump — shared metrics stay comparable.
 # Always a "<YYYY-MM-DD>-<what-changed>" slug; the date prefix names rescore experiments.
-SCORING_VERSION = "2026-09-02-w12-standalone"
+SCORING_VERSION = "2026-09-07-w11-workflow-split"
 
 
 def summarize_target_weighted_quality(
@@ -124,6 +126,7 @@ async def run_opinion_eval(
         )
 
     candidate_quality = make_candidate_quality_judge(settings)
+    candidate_independent_quality = make_candidate_independent_quality_judge(settings)
     opinion_quality, opinion_attempted, operation_accuracy, opinion_quality_v2 = make_opinion_judges(settings)
     result = await EvalAsync(
         EVAL_PROJECT_NAME,
@@ -139,7 +142,9 @@ async def run_opinion_eval(
             evidence_recall,
             evidence_precision,
             opinion_brevity,
+            candidate_grouping,
             candidate_quality,
+            candidate_independent_quality,
             opinion_quality,
             opinion_attempted,
             operation_accuracy,
@@ -158,11 +163,17 @@ async def run_opinion_eval(
         max_concurrency=max_concurrency,
     )
     flush_braintrust_tracing()
-    for score_name in ("candidate_quality", "opinion_quality", "operation_accuracy", "opinion_quality_v2"):
+    for score_name in (
+        "candidate_quality",
+        "candidate_independent_quality",
+        "opinion_quality",
+        "operation_accuracy",
+        "opinion_quality_v2",
+    ):
         summary_line = summarize_target_weighted_quality(
             result.results,
             score_name,
-            target_kind="add" if score_name == "candidate_quality" else None,
+            target_kind="add" if score_name in {"candidate_quality", "candidate_independent_quality"} else None,
         )
         if summary_line:
             print(summary_line)
@@ -209,6 +220,7 @@ async def rescore_opinion_eval(
         return outputs_by_week[input["week"]]
 
     candidate_quality = make_candidate_quality_judge(settings)
+    candidate_independent_quality = make_candidate_independent_quality_judge(settings)
     opinion_quality, opinion_attempted, operation_accuracy, opinion_quality_v2 = make_opinion_judges(settings)
     result = await EvalAsync(
         EVAL_PROJECT_NAME,
@@ -224,7 +236,9 @@ async def rescore_opinion_eval(
             evidence_recall,
             evidence_precision,
             opinion_brevity,
+            candidate_grouping,
             candidate_quality,
+            candidate_independent_quality,
             opinion_quality,
             opinion_attempted,
             operation_accuracy,
@@ -240,11 +254,17 @@ async def rescore_opinion_eval(
         },
         max_concurrency=max_concurrency,
     )
-    for score_name in ("candidate_quality", "opinion_quality", "operation_accuracy", "opinion_quality_v2"):
+    for score_name in (
+        "candidate_quality",
+        "candidate_independent_quality",
+        "opinion_quality",
+        "operation_accuracy",
+        "opinion_quality_v2",
+    ):
         summary_line = summarize_target_weighted_quality(
             result.results,
             score_name,
-            target_kind="add" if score_name == "candidate_quality" else None,
+            target_kind="add" if score_name in {"candidate_quality", "candidate_independent_quality"} else None,
         )
         if summary_line:
             print(summary_line)
@@ -275,18 +295,26 @@ def _fetch_experiment_rows(settings: Settings, experiment_name: str) -> list[dic
 
     headers = {"Authorization": f"Bearer {settings.braintrust_api_key}"}
     experiment = _get_experiment(settings, experiment_name)
-    fetch = httpx.post(
-        f"https://api.braintrust.dev/v1/experiment/{experiment['id']}/fetch",
-        headers=headers,
-        json={"limit": 1000},
-        timeout=120,
-        follow_redirects=True,
-    )
-    fetch.raise_for_status()
-    try:
-        payload = json.loads(fetch.content)
-    except ValueError:
-        payload = json.loads(gzip.decompress(fetch.content))
+    events = []
+    cursor = None
+    while True:
+        body = {"limit": 1000, **({"cursor": cursor} if cursor else {})}
+        fetch = httpx.post(
+            f"https://api.braintrust.dev/v1/experiment/{experiment['id']}/fetch",
+            headers=headers,
+            json=body,
+            timeout=120,
+            follow_redirects=True,
+        )
+        fetch.raise_for_status()
+        try:
+            payload = json.loads(fetch.content)
+        except ValueError:
+            payload = json.loads(gzip.decompress(fetch.content))
+        events.extend(payload["events"])
+        cursor = payload.get("cursor")
+        if not cursor or not payload["events"]:
+            break
     rows = [
         {
             "input": event["input"],
@@ -294,7 +322,7 @@ def _fetch_experiment_rows(settings: Settings, experiment_name: str) -> list[dic
             "output": event["output"],
             "metadata": {**(event.get("metadata") or {}), "rescored_from": experiment_name},
         }
-        for event in payload["events"]
+        for event in events
         if (event.get("span_attributes") or {}).get("type") == "eval"
     ]
     if not rows:

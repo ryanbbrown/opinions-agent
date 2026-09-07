@@ -4,32 +4,32 @@ This is the working baseline for the two-stage opinion workflow. The numbers are
 
 ## Reviewed test set
 
-The checked-in test set has 34 expected opinions across W04–W13: 33 new opinions and one revision.
+The checked-in test set has 35 expected opinions across W04–W13: 34 new opinions and one revision.
 
 | Measure | Strict score | Review-adjusted score |
 |---|---:|---:|
-| Opinion text covers the required concepts | 30/34 (88.2%) | 31/34 (91.2%) |
-| Add or revise routing is correct | 32/34 (94.1%) | 34/34 (100%) |
-| Both opinion text and routing are correct | 28/34 (82.4%) | 31/34 (91.2%) |
+| At least one candidate independently covers each add target | 32/34 (94.1%) | 32/34 (94.1%) |
+| Final opinion text covers the required concepts | 33/35 (94.3%) | 33/35 (94.3%) |
+| Add or revise routing is correct | 32/35 (91.4%) | 34/35 (97.1%) |
+| Both final opinion text and add-or-revise routing are correct | 30/35 (85.7%) | 32/35 (91.4%) |
 
-The review adjustments are narrow:
+The review adjustments accept two labeled-add cases where Ryan already considered the proposed revision reasonable: W08-04 and W13-05. W13-04 was also revised instead of added, but it remains unadjusted pending review.
 
-- The quality judge misread “do not vibe-code products yourself” as “do not use products yourself.” The generated opinion did include real use as the trust signal, so W08-02 is a quality pass after review.
-- W08-04 and W13-05 were labeled as new opinions, but their proposed revisions were also acceptable outcomes. They remain strict routing failures so the test labels do not move to fit one run.
-
-The three substantive text misses omitted Figma's awkward position, Price's Law, and the warning against rip-and-replace adoption.
+The two substantive text misses omitted Figma's awkward position in W06-01 and the complete searchable-reference fallback in W13-01.
 
 ### Candidate routing and grouping
 
-The writer produced 42 candidates that cited evidence assigned to the 34 expected opinions. The consolidator made 40/42 strictly labeled routing decisions correctly. The two other decisions were the acceptable W08-04 and W13-05 revisions.
+The full run produced 84 candidates. Every candidate was at most 81 words, below the validated 90-word maximum; mean length was 51.3 words and median length was 49.5 words.
 
-All six cases with more than one candidate for one expected opinion split highlights from the same article. Four expected opinions became two candidates; two became three candidates. This produced the eight-candidate difference between 42 and 34. The target-level quality scorer selects one candidate for each expected opinion, so it does not penalize the extra overlapping candidate.
+Strict candidate grouping scored 92.86%. W05-02 split thin-harness architecture from the procedure for turning repeated work into a skill. W11-04 split network-building from the broader career-assets claim. The other scored weeks matched their target partitions exactly.
 
-### Evidence precision remains the main test-set gap
+The semantic approval-unit score is 32/34. Both new W11 targets pass independently through candidates 004 and 011. W05-02 passes through candidate 001, and W11-04 passes through candidate 014. The two failures are the known W06-01 and W13-01 concept omissions. This score ignores extra candidates after one candidate passes; evidence precision measures their cited evidence separately.
 
-The full generation run produced 93 candidates. Only 42 cited evidence assigned to expected opinions; 51 used only evidence labeled as not suitable for an opinion. The incomplete end-to-end run reported about 49% evidence precision. These extra candidates were excluded from the scorer-only text and routing results above.
+### Evidence precision is not a current optimization target
 
-The next quality work should therefore separate three questions:
+Evidence recall was 100% and evidence precision was 48.5%. Ryan has deprioritized false candidate generation because rejecting an unsuitable proposal is cheap. Text fidelity, candidate grouping, and consolidation routing remain separately measurable.
+
+The eval separates three questions:
 
 1. Did the writer select evidence that should become an opinion?
 2. Did the writer group related evidence into the right number of opinions?
@@ -56,23 +56,8 @@ The production replay supports a limited conclusion: the consolidator now avoids
 
 ## Current read
 
-- Conceptual writing quality is about 91% after review, which matches the earlier 11/12 smoke result.
-- Consolidator decisions look useful after manual review, even where strict labels disagree.
-- Evidence selection is the largest known problem.
-- Same-article evidence grouping is a separate, smaller problem that the current target-level quality score can hide.
-- A complete nine-week end-to-end run is still needed after the request-timeout fix. The current baseline combines frozen candidate artifacts, a consolidator-only replay, and a scorer-only pass because several final turns in the source run timed out.
-
-## Next prompt experiment
-
-Keep workflow instructions unchanged: evidence reads, candidate-file writes, critic calls, candidate validation, consolidation, Telegram proposals, and approval handling are process contracts.
-
-Test a shorter opinion-selection and opinion-writing guide separately. Replace most abstract explanation with contrastive examples that show:
-
-- a durable opinion versus an interesting fact or reference note;
-- one argument supported by several highlights versus two independent arguments from one article;
-- a complete opinion that keeps its mechanism, named term, bound, or correction versus a vague compression that drops one;
-- a personal or familiar stance worth keeping versus empty consensus.
-
-Keep a short rule above the examples: write one independently useful, personally endorsable belief per opinion, and preserve every detail that the belief depends on.
-
-Treat this as a measured experiment, not an automatic cleanup. Earlier attempts to merge or shorten the fidelity rules reduced quality because the separate reminders were load-bearing. The example-based version should first run on a small diagnostic subset, then on the frozen-candidate quality path before an expensive end-to-end run.
+- The concise prompt's full GPT run reached 32/34 strict concept quality while keeping all candidates below 90 words.
+- Candidate grouping is strong under both the checked-in and discussed alternative partitions.
+- Consolidator decisions remain useful after manual review, even where strict labels disagree.
+- The remaining concept misses are isolated fidelity omissions rather than one shared prompt failure.
+- Further prompt rules are not justified by the current results. Review W13-04 routing and the disputed partitions before another prompt experiment.

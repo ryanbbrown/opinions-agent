@@ -344,9 +344,9 @@ def test_checked_in_ground_truth_builds_reviewed_final_state():
     assert len(base_sources) == len(set(base_sources)) == 26
 
     target_ids = [target.target_id for case in cases for target in case.targets]
-    assert len(target_ids) == len(set(target_ids)) == 34
-    assert sum(len(target.required_sources) for case in cases for target in case.targets) == 67
-    assert sum(len(case.not_converted) for case in cases) == 75
+    assert len(target_ids) == len(set(target_ids)) == 35
+    assert sum(len(target.required_sources) for case in cases for target in case.targets) == 68
+    assert sum(len(case.not_converted) for case in cases) == 74
 
     targets = {target.target_id: target for case in cases for target in case.targets}
     assert targets["W04-01"].kind == "update"
@@ -360,6 +360,16 @@ def test_checked_in_ground_truth_builds_reviewed_final_state():
         "rw:01knfk4zd7ca5tq7kf760jht7a",
         "reader-note:01kksy9drnnqysr6tb5e2n0pw3",
     ]
+    assert targets["W11-02"].required_sources == [
+        "rw:01kskr0rbgy1rkw3y1gq9jw55g",
+        "rw:01kskdka8pn546x269sscxrjbs",
+        "rw:01kskdxwnen4fmrjggtkznerh8",
+    ]
+    assert targets["W11-06"].required_sources == ["rw:01kskr18czcpb0gsrgex1jn5qc"]
+    w11 = next(case for case in cases if case.week == "W11")
+    assert "rw:01kskr1kaf1k792d3t6q8xj596" in {
+        evidence.evidence_id for evidence in w11.not_converted
+    }
     assert targets["W12-01"].kind == "add"
     assert targets["W12-01"].base_opinion_id is None
     assert targets["W13-05"].kind == "add"
@@ -374,10 +384,10 @@ def test_checked_in_ground_truth_builds_reviewed_final_state():
     final_case = WeekCase(week="FINAL", targets=[], not_converted=[])
     final = build_seed_opinions(base, [*cases, final_case], "FINAL")
     assert [opinion.opinion_id for opinion in final.opinions] == [
-        f"opinion-{index:06d}" for index in range(1, 46)
+        f"opinion-{index:06d}" for index in range(1, 47)
     ]
     final_sources = [source for opinion in final.opinions for source in opinion.sources]
-    assert len(final_sources) == len(set(final_sources)) == 93
+    assert len(final_sources) == len(set(final_sources)) == 94
 
     expected_add_id = 13
     for case in cases:
@@ -387,10 +397,10 @@ def test_checked_in_ground_truth_builds_reviewed_final_state():
                 assert opinion.text == target.ideal_opinion
                 assert opinion.sources == target.required_sources
                 expected_add_id += 1
-    assert expected_add_id == 46
+    assert expected_add_id == 47
     assert final.get("opinion-000003").text == targets["W04-01"].ideal_opinion
     assert final.get("opinion-000029").text == targets["W08-05"].ideal_opinion
-    assert final.get("opinion-000038").text == targets["W12-01"].ideal_opinion
+    assert final.get("opinion-000039").text == targets["W12-01"].ideal_opinion
     assert final.get("opinion-000002").text == (
         "Making code cheap to generate can create comprehension debt when teams optimize for passing tests "
         "and merge velocity without maintaining genuine understanding."

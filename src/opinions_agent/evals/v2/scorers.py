@@ -26,20 +26,19 @@ Canonical opinion (stance reference only — do not require its exact wording or
 Required core concepts — the generated opinion must express every one of these:
 {concepts}
 
-Generated opinion:
+Generated opinion set:
 {generated}
 
 Grade in two steps:
-1. Coverage. For each required core concept, decide whether the generated opinion expresses it. Wording may \
-differ and concepts may be bridged together differently; what matters is that the idea is present and not \
-weakened into a vaguer umbrella claim. A concept expressed but hollowed out into something noncommittal is not \
-covered.
-2. Stance. The generated opinion must take the same side as the canonical opinion. If it covers the concepts but \
-argues a different or contradictory position, that is a failure.
+1. Coverage. Decide whether the generated opinions collectively express each required core concept. One generated
+opinion can cover several canonical targets, and several generated opinions can together cover one target. Ignore how
+the content was split or merged; separate scorers grade grouping, evidence, and operation. Wording may differ and
+concepts may be bridged differently, but a concept weakened into a vague umbrella claim is not covered.
+2. Stance. The generated opinions that express the target must take the same side as the canonical opinion. Unrelated
+opinions in the set do not matter.
 
-The check is binary. The generated opinion passes only if every required core concept is covered and the stance \
-agrees. Extra detail beyond the concept list — elaboration, mechanism, examples, or a second point — does not by \
-itself cause a failure.
+The check is binary. The set passes only if every required core concept is covered and the stance agrees. Extra detail
+beyond the concept list does not by itself cause a failure.
 
 Answer with JSON only, no other text:
 {{"concepts": [{{"concept": "<concept text>", "covered": true | false}}, ...], \
@@ -54,30 +53,15 @@ A generated opinion is being compared to a canonical opinion written from the sa
 Canonical opinion:
 {ideal}
 
-Generated opinion:
+Generated opinion set:
 {generated}
 
-Question: is the generated opinion an attempt at the same central claim as the canonical opinion — the same core
-stance about the same subject — even if it is missing supporting concepts, named examples, numbers, or caveats?
-Answer false only if it takes a genuinely different stance or centers a different claim entirely.
+Question: does at least one opinion, or a combination of the opinions, attempt the same central claim as the canonical
+opinion — the same core stance about the same subject — even if supporting concepts, named examples, numbers, or
+caveats are missing? Answer false only when the set contains no attempt at that claim.
 
 Answer with JSON only, no other text:
 {{"same_claim": true | false, "note": "<one short sentence>"}}
-"""
-
-MATCH_PROMPT = """\
-A batch of generated opinion proposals needs to be matched against a canonical target opinion.
-
-Target opinion:
-{ideal}
-
-Candidate proposals:
-{candidates}
-
-Which single candidate expresses the same central claim as the target opinion? If none of them do, answer null.
-
-Answer with JSON only, no other text:
-{{"choice": <candidate number or null>}}
 """
 
 
@@ -116,6 +100,64 @@ def evidence_precision(input: Any, output: Any, expected: Any) -> Score:
     )
 
 
+def candidate_grouping(input: Any, output: Any, expected: Any) -> Score:
+    """Pairwise F1 for the evidence partition in the frozen candidate snapshot.
+
+    Evidence selection is scored elsewhere. This score considers only converted evidence that appears in a candidate.
+    Over-merged pairs lower precision; under-merged pairs lower recall.
+    """
+    if "candidates" not in output:
+        return Score(
+            name="candidate_grouping",
+            score=None,
+            metadata={"reason": "stored output has no candidate snapshot"},
+        )
+    expected_owner = {
+        evidence_id: target["target_id"] for target in expected["targets"] for evidence_id in target["required_sources"]
+    }
+    candidate_evidence = [
+        set(candidate.get("evidence_ids", [])) & set(expected_owner) for candidate in output["candidates"]
+    ]
+    observed = sorted(set().union(*candidate_evidence) if candidate_evidence else set())
+    if len(observed) < 2:
+        return Score(
+            name="candidate_grouping",
+            score=None,
+            metadata={"reason": "fewer than two converted evidence items were cited"},
+        )
+
+    over_merged: list[list[str]] = []
+    under_merged: list[list[str]] = []
+    true_positive = false_positive = false_negative = 0
+    for index, left in enumerate(observed):
+        for right in observed[index + 1 :]:
+            expected_together = expected_owner[left] == expected_owner[right]
+            predicted_together = any({left, right} <= group for group in candidate_evidence)
+            if expected_together and predicted_together:
+                true_positive += 1
+            elif predicted_together:
+                false_positive += 1
+                over_merged.append([left, right])
+            elif expected_together:
+                false_negative += 1
+                under_merged.append([left, right])
+
+    precision = true_positive / (true_positive + false_positive) if true_positive + false_positive else 1.0
+    recall = true_positive / (true_positive + false_negative) if true_positive + false_negative else 1.0
+    score = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+    return Score(
+        name="candidate_grouping",
+        score=score,
+        metadata={
+            "precision": precision,
+            "recall": recall,
+            "over_merged_pairs": over_merged,
+            "under_merged_pairs": under_merged,
+            "observed_evidence": observed,
+        },
+    )
+
+
 def opinion_brevity(input: Any, output: Any, expected: Any) -> Score:
     """Mean proposal length vs the week's mean target length: 1.0 at or below the golden length, lower when longer.
 
@@ -140,7 +182,7 @@ def opinion_brevity(input: Any, output: Any, expected: Any) -> Score:
 
 
 def make_candidate_quality_judge(settings: Settings, *, model: str = JUDGE_MODEL, client: Any = None):
-    """Grade frozen post-critic candidates against add targets before consolidation."""
+    """Grade the complete frozen post-critic opinion set against add targets before consolidation."""
     conceptual_quality, _, _, _ = make_opinion_judges(settings, model=model, client=client)
 
     async def candidate_quality(input: Any, output: Any, expected: Any) -> Score:
@@ -150,8 +192,8 @@ def make_candidate_quality_judge(settings: Settings, *, model: str = JUDGE_MODEL
                 score=None,
                 metadata={"reason": "stored output has no candidate snapshot"},
             )
-        add_targets = [target for target in expected["targets"] if target.get("kind", "add") == "add"]
-        if not add_targets:
+        targets = [target for target in expected["targets"] if target.get("kind", "add") == "add"]
+        if not targets:
             return Score(name="candidate_quality", score=None, metadata={"reason": "no add targets this week"})
         proposals = [
             {
@@ -167,11 +209,74 @@ def make_candidate_quality_judge(settings: Settings, *, model: str = JUDGE_MODEL
         score = await conceptual_quality(
             input,
             {"week": output.get("week"), "proposals": proposals},
-            {**expected, "targets": add_targets},
+            {**expected, "targets": targets},
         )
         return Score(name="candidate_quality", score=score.score, metadata=score.metadata)
 
     return candidate_quality
+
+
+def make_candidate_independent_quality_judge(settings: Settings, *, model: str = JUDGE_MODEL, client: Any = None):
+    """Grade whether one frozen candidate independently covers each add target."""
+    if client is None:
+        from openai import AsyncOpenAI
+
+        client = AsyncOpenAI(base_url=BRAINTRUST_PROXY_URL, api_key=settings.braintrust_api_key)
+
+    async def candidate_independent_quality(input: Any, output: Any, expected: Any) -> Score:
+        if "candidates" not in output:
+            return Score(
+                name="candidate_independent_quality",
+                score=None,
+                metadata={"reason": "stored output has no candidate snapshot"},
+            )
+        targets = [target for target in expected["targets"] if target.get("kind", "add") == "add"]
+        if not targets:
+            return Score(
+                name="candidate_independent_quality",
+                score=None,
+                metadata={"reason": "no add targets this week"},
+            )
+        proposals = [
+            {
+                "proposal_id": candidate["candidate_id"],
+                "kind": "add",
+                "section": candidate["section"],
+                "opinion_text": candidate["opinion_text"],
+                "evidence_ids": candidate["evidence_ids"],
+                "message_text": candidate["opinion_text"],
+            }
+            for candidate in output["candidates"]
+        ]
+        per_target = []
+        for target in targets:
+            linked = _proposals_for_target(proposals, target)
+            verdicts = await asyncio.gather(*(_judge_pair(client, model, target, [proposal]) for proposal in linked))
+            candidate_results = [
+                {
+                    "candidate_id": proposal["proposal_id"],
+                    "pass": verdict.get("pass") is True,
+                    "missing": verdict.get("missing"),
+                    "rationale": verdict.get("rationale"),
+                }
+                for proposal, verdict in zip(linked, verdicts, strict=True)
+            ]
+            per_target.append(
+                {
+                    "target_id": target["target_id"],
+                    "candidate_ids": [proposal["proposal_id"] for proposal in linked],
+                    "passing_candidate_ids": [result["candidate_id"] for result in candidate_results if result["pass"]],
+                    "pass": any(result["pass"] for result in candidate_results),
+                    "candidates": candidate_results,
+                }
+            )
+        return Score(
+            name="candidate_independent_quality",
+            score=sum(1 for target in per_target if target["pass"]) / len(per_target),
+            metadata={"targets": per_target},
+        )
+
+    return candidate_independent_quality
 
 
 def make_opinion_judges(settings: Settings, *, model: str = JUDGE_MODEL, client: Any = None):
@@ -188,33 +293,35 @@ def make_opinion_judges(settings: Settings, *, model: str = JUDGE_MODEL, client:
         if not targets:
             return None
         proposals = output.get("proposals", [])
-        matches = await match_proposals_to_targets(proposals, targets, client=client, model=model)
         per_target = []
+        matched_proposal_ids: set[str] = set()
         for target in targets:
-            proposal = matches.get(target["target_id"])
-            if proposal is None:
+            target_proposals = _proposals_for_target(proposals, target)
+            matched_proposal_ids.update(proposal["proposal_id"] for proposal in target_proposals)
+            if not target_proposals:
                 per_target.append(
                     {
                         "target_id": target["target_id"],
+                        "proposal_ids": [],
                         "verdict": "unmatched",
                         "attempted": False,
                         "score": 0.0,
-                        **_operation_result(target, None),
+                        **_operation_result(target, []),
                     }
                 )
                 continue
-            verdict = await _judge_pair(client, model, target, proposal)
+            verdict = await _judge_pair(client, model, target, target_proposals)
             passed = verdict.get("pass") is True
             attempted, attempt_note = True, None
             if not passed:
-                attempt = await _judge_attempt(client, model, target, proposal)
+                attempt = await _judge_attempt(client, model, target, target_proposals)
                 attempted = attempt.get("same_claim") is True
                 attempt_note = attempt.get("note")
             per_target.append(
                 {
                     "target_id": target["target_id"],
-                    "proposal_id": proposal.get("proposal_id"),
-                    "generated": proposal.get("opinion_text"),
+                    "proposal_ids": [proposal["proposal_id"] for proposal in target_proposals],
+                    "generated": _generated_opinion_set(target_proposals),
                     "verdict": "pass" if passed else "fail",
                     "missing": verdict.get("missing"),
                     "rationale": verdict.get("rationale"),
@@ -223,10 +330,15 @@ def make_opinion_judges(settings: Settings, *, model: str = JUDGE_MODEL, client:
                     "attempted": attempted,
                     "attempt_note": attempt_note,
                     "score": 1.0 if passed else 0.0,
-                    **_operation_result(target, proposal),
+                    **_operation_result(target, target_proposals),
                 }
             )
-        return {"targets": per_target, "unmatched_proposals": _unmatched_proposal_ids(proposals, matches)}
+        return {
+            "targets": per_target,
+            "unmatched_proposals": [
+                proposal["proposal_id"] for proposal in proposals if proposal["proposal_id"] not in matched_proposal_ids
+            ],
+        }
 
     def _shared_evaluation(input: Any, output: Any, expected: Any) -> asyncio.Task:
         week = next(
@@ -262,7 +374,7 @@ def make_opinion_judges(settings: Settings, *, model: str = JUDGE_MODEL, client:
                 "targets": [
                     {
                         "target_id": target["target_id"],
-                        "proposal_id": target.get("proposal_id"),
+                        "proposal_ids": target.get("proposal_ids", []),
                         "attempted": target["attempted"],
                         "note": target.get("attempt_note"),
                     }
@@ -283,7 +395,7 @@ def make_opinion_judges(settings: Settings, *, model: str = JUDGE_MODEL, client:
                 "targets": [
                     {
                         "target_id": target["target_id"],
-                        "proposal_id": target.get("proposal_id"),
+                        "proposal_ids": target.get("proposal_ids", []),
                         "operation_valid": target["operation_valid"],
                         "operation_reason": target["operation_reason"],
                         "expected_operation": target["expected_operation"],
@@ -306,7 +418,7 @@ def make_opinion_judges(settings: Settings, *, model: str = JUDGE_MODEL, client:
                 "targets": [
                     {
                         "target_id": target["target_id"],
-                        "proposal_id": target.get("proposal_id"),
+                        "proposal_ids": target.get("proposal_ids", []),
                         "conceptual_verdict": target["verdict"],
                         "operation_valid": target["operation_valid"],
                         "operation_reason": target["operation_reason"],
@@ -320,37 +432,51 @@ def make_opinion_judges(settings: Settings, *, model: str = JUDGE_MODEL, client:
     return opinion_quality, opinion_attempted, operation_accuracy, opinion_quality_v2
 
 
-def _operation_result(target: dict, proposal: dict | None) -> dict:
+def _operation_result(target: dict, proposals: list[dict]) -> dict:
     target_kind = target.get("kind", "add")
     expected_operation = "add" if target_kind == "add" else "update"
-    if proposal is None:
+    if not proposals:
         return {
             "operation_valid": False,
-            "operation_reason": "no matched proposal",
+            "operation_reason": "no evidence-linked proposal",
             "expected_operation": expected_operation,
             "proposal_kind": None,
         }
-    proposal_kind = proposal.get("kind")
-    if target_kind == "add":
-        valid = proposal_kind == "add"
+
+    required_sources = set(target["required_sources"])
+    routed_sources = set().union(*(set(proposal.get("evidence_ids", [])) for proposal in proposals))
+    proposal_kinds = {proposal.get("kind") or "unknown" for proposal in proposals}
+    proposal_kind = next(iter(proposal_kinds)) if len(proposal_kinds) == 1 else "mixed"
+    if not required_sources <= routed_sources:
         return {
-            "operation_valid": valid,
-            "operation_reason": "correct add" if valid else f"add target proposed as {proposal_kind or 'unknown'}",
+            "operation_valid": False,
+            "operation_reason": "required evidence is not fully routed",
             "expected_operation": expected_operation,
             "proposal_kind": proposal_kind,
         }
-    if proposal_kind not in {"revise", "update"}:
+    if target_kind == "add":
+        valid = proposal_kinds == {"add"}
+        return {
+            "operation_valid": valid,
+            "operation_reason": "correct add" if valid else f"add target proposed as {proposal_kind}",
+            "expected_operation": expected_operation,
+            "proposal_kind": proposal_kind,
+        }
+    if not proposal_kinds <= {"revise", "update"}:
         return {
             "operation_valid": False,
-            "operation_reason": f"update target proposed as {proposal_kind or 'unknown'}",
+            "operation_reason": f"update target proposed as {proposal_kind}",
             "expected_operation": expected_operation,
             "proposal_kind": proposal_kind,
         }
     expected_current = _normalize_opinion_text(target.get("base_opinion_text"))
-    current = _normalize_opinion_text(
-        proposal.get("current_opinion_text") or extract_current_opinion_text(proposal.get("message_text") or "")
-    )
-    valid = bool(expected_current) and current == expected_current
+    currents = {
+        _normalize_opinion_text(
+            proposal.get("current_opinion_text") or extract_current_opinion_text(proposal.get("message_text") or "")
+        )
+        for proposal in proposals
+    }
+    valid = bool(expected_current) and currents == {expected_current}
     return {
         "operation_valid": valid,
         "operation_reason": "correct update" if valid else "revision does not identify the canonical base opinion",
@@ -363,43 +489,9 @@ def _normalize_opinion_text(text: str | None) -> str:
     return " ".join((text or "").split())
 
 
-async def match_proposals_to_targets(
-    proposals: list[dict],
-    targets: list[dict],
-    *,
-    client: Any,
-    model: str,
-) -> dict[str, dict | None]:
-    """Pair proposals with targets by evidence overlap; an LLM classifier resolves ambiguous cases."""
-    matches: dict[str, dict | None] = {}
-    assigned: set[str] = set()
-    for target in targets:
-        required = set(target["required_sources"])
-        candidates = [
-            (len(required & set(proposal["evidence_ids"])), proposal)
-            for proposal in proposals
-            if proposal["proposal_id"] not in assigned and required & set(proposal["evidence_ids"])
-        ]
-        if not candidates:
-            matches[target["target_id"]] = None
-            continue
-        best = max(overlap for overlap, _ in candidates)
-        tied = [proposal for overlap, proposal in candidates if overlap == best]
-        proposal = tied[0] if len(tied) == 1 else await _pick_candidate(client, model, target, tied)
-        matches[target["target_id"]] = proposal
-        if proposal is not None:
-            assigned.add(proposal["proposal_id"])
-    for target in targets:
-        if matches[target["target_id"]] is not None:
-            continue
-        remaining = [proposal for proposal in proposals if proposal["proposal_id"] not in assigned]
-        if not remaining:
-            continue
-        proposal = await _pick_candidate(client, model, target, remaining)
-        matches[target["target_id"]] = proposal
-        if proposal is not None:
-            assigned.add(proposal["proposal_id"])
-    return matches
+def _proposals_for_target(proposals: list[dict], target: dict) -> list[dict]:
+    required_sources = set(target["required_sources"])
+    return [proposal for proposal in proposals if required_sources & set(proposal.get("evidence_ids", []))]
 
 
 def _converted_ids(expected: Any) -> set[str]:
@@ -407,41 +499,26 @@ def _converted_ids(expected: Any) -> set[str]:
 
 
 def _cited_ids(output: Any) -> set[str]:
-    return {
-        evidence_id
-        for proposal in output.get("proposals", [])
-        for evidence_id in proposal.get("evidence_ids", [])
-    }
+    return {evidence_id for proposal in output.get("proposals", []) for evidence_id in proposal.get("evidence_ids", [])}
 
 
-def _unmatched_proposal_ids(proposals: list[dict], matches: dict[str, dict | None]) -> list[str]:
-    matched = {proposal["proposal_id"] for proposal in matches.values() if proposal is not None}
-    return [proposal["proposal_id"] for proposal in proposals if proposal["proposal_id"] not in matched]
-
-
-async def _pick_candidate(client: Any, model: str, target: dict, candidates: list[dict]) -> dict | None:
-    numbered = "\n".join(
-        f"{index}. {proposal.get('opinion_text') or proposal.get('heading') or '(no text)'}"
-        for index, proposal in enumerate(candidates, start=1)
+def _generated_opinion_set(proposals: list[dict]) -> str:
+    return "\n\n".join(
+        f"[{proposal['proposal_id']}]\n"
+        f"{proposal.get('opinion_text') or _strip_tags(proposal.get('message_text') or '')}"
+        for proposal in proposals
     )
-    prompt = MATCH_PROMPT.format(ideal=target["ideal_opinion"], candidates=numbered)
-    payload = await _judge_json(client, model, prompt)
-    choice = payload.get("choice")
-    if isinstance(choice, int) and 1 <= choice <= len(candidates):
-        return candidates[choice - 1]
-    return None
 
 
-async def _judge_pair(client: Any, model: str, target: dict, proposal: dict) -> dict:
+async def _judge_pair(client: Any, model: str, target: dict, proposals: list[dict]) -> dict:
     concepts = "\n".join(f"- {concept}" for concept in target.get("required_concepts", []))
-    generated = proposal.get("opinion_text") or _strip_tags(proposal.get("message_text") or "")
+    generated = _generated_opinion_set(proposals)
     prompt = JUDGE_PROMPT.format(ideal=target["ideal_opinion"], concepts=concepts or "(none)", generated=generated)
     return await _judge_json(client, model, prompt)
 
 
-async def _judge_attempt(client: Any, model: str, target: dict, proposal: dict) -> dict:
-    generated = proposal.get("opinion_text") or _strip_tags(proposal.get("message_text") or "")
-    prompt = ATTEMPT_PROMPT.format(ideal=target["ideal_opinion"], generated=generated)
+async def _judge_attempt(client: Any, model: str, target: dict, proposals: list[dict]) -> dict:
+    prompt = ATTEMPT_PROMPT.format(ideal=target["ideal_opinion"], generated=_generated_opinion_set(proposals))
     return await _judge_json(client, model, prompt)
 
 

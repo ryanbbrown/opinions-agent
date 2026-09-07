@@ -620,24 +620,26 @@ AI-native service firms only become software-like when delivery gets easier, fas
 
 **Section:** AI Leverage And Organizations
 
-Enterprise AI transformation should start by mapping end-to-end workflows, ROI, data layers, and tribal knowledge around existing systems; rip-and-replace migrations often slow adoption more than they help.
+Enterprise AI deployment should start by mapping how work actually happens end to end, identifying the workflows where agents offer enough value to justify deployment, translating tribal knowledge into decision logic, and evaluating agents at the same intermediate checkpoints humans use.
 
 **Core concepts**
 
-- Start by mapping end-to-end workflows and per-workflow ROI
-- Don't rip-and-replace existing systems; it slows adoption
+- Map real workflows end to end before choosing where to deploy agents
+- Use per-workflow ROI to prioritize deployment
+- Translate tribal knowledge into decision logic
+- Evaluate agents at the intermediate checkpoints humans use
 
 **Assigned evidence IDs**
 
 - `rw:01kskr0rbgy1rkw3y1gq9jw55g`
-- `rw:01kskr18czcpb0gsrgex1jn5qc`
-- `rw:01kskr1kaf1k792d3t6q8xj596`
+- `rw:01kskdka8pn546x269sscxrjbs`
+- `rw:01kskdxwnen4fmrjggtkznerh8`
 
 **Source excerpts**
 
 - How to Transform a Company With AI: “You should map every workflow, figure out what the ROI of an agent would be in each particular workflow and how to approach it from an engineering perspective, then choose where to deploy the agents where they'd be a good fit.”
-- How to Transform a Company With AI: “Don't force massive migrations. Most companies have already spent years moving onto systems like Salesforce and NetSuite.”
-- How to Transform a Company With AI: “In most workflows, the data that powers the transformation falls into four categories: the system of record, the business rules, the raw intake data, and the feedback or memory the agent accumulates over time.”
+- Forward Deployed Engineering 101: “Trace the human's steps and grade the AI on each one: A human doesn't solve problems in one move. It's a multi-step process. Map out those steps and see if the AI is hitting the same checkpoints along the way.”
+- Forward Deployed Engineering 101: “In our view, there are three main parts of an Applied AI FDE's job: Audit, Evals, and Deployment. Let's break down each one. Audit: You're onsite with a client, mapping processes/workflows in different teams within the company.”
 
 ### W11-03
 
@@ -715,14 +717,34 @@ High agency needs recovery and self-context, not endless escalation; because the
 - How to avoid feeling low as a high-agency person: “there is no endgame to a high-agency growth mindset. The more you get ahead in life, the more levels you unlock.”
 - How to avoid feeling low as a high-agency person: “Your situation, circumstances, and life are unique to you. Remember the context that surrounds you.”
 
+### W11-06
+
+**Operation:** add
+
+**Section:** AI Leverage And Organizations
+
+AI transformation should usually layer agents onto the systems employees already use rather than require wholesale replacement; rip-and-replace migrations delay value and force teams to relearn software they already depend on.
+
+**Core concepts**
+
+- Layer AI onto existing systems when possible
+- Do not require wholesale rip-and-replace migrations
+- Forced migrations delay value and make employees relearn established software
+
+**Assigned evidence IDs**
+
+- `rw:01kskr18czcpb0gsrgex1jn5qc`
+
+**Source excerpts**
+
+- How to Transform a Company With AI: “Don't force massive migrations. Most companies have already spent years moving onto systems like Salesforce and NetSuite.”
+
 ### W11 not converted
 
 - Why founder conviction matters more than ever (`rw:01ksgcr1rbdnx687dbpxcrvqe1`, highlight)
 - Why founder conviction matters more than ever (`rw:01ksk6zfw8w6n8hm9w17qf6fcz`, highlight)
 - Why founder conviction matters more than ever (`rw:01ksk72s17myy9345maf3w8n16`, highlight)
 - Why founder conviction matters more than ever (`rw:01ksk73apxtb4e4psg1e1fbser`, highlight)
-- Forward Deployed Engineering 101 (`rw:01kskdka8pn546x269sscxrjbs`, highlight)
-- Forward Deployed Engineering 101 (`rw:01kskdxwnen4fmrjggtkznerh8`, highlight)
 - Today we reduced headcount by 22% (`rw:01kske3vaettcj0c3jf4yarj2e`, highlight)
 - Today we reduced headcount by 22% (`rw:01kske457vzf6kdrafezs7yfcf`, highlight)
 - Today we reduced headcount by 22% (`rw:01kske4z05dah4p3myaacrkk16`, highlight)
@@ -738,6 +760,7 @@ High agency needs recovery and self-context, not endless escalation; because the
 - The Career Bets That Compound (And the Ones That Don’t) (`rw:01ksvjsb11mfv49z57byp5eb7k`, highlight)
 - Is SaaS dead? (`rw:01kswcrdg0544ppn0agb1whjjw`, highlight)
 - I wrote this ~3 months ago, and since then (`rw:01kszp5hzcj2y18f5gcj4vjqbq`, highlight)
+- How to Transform a Company With AI (`rw:01kskr1kaf1k792d3t6q8xj596`, highlight)
 
 ## W12
 

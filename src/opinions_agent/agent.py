@@ -41,6 +41,32 @@ class AgentTurnOutput(BaseModel):
     notes: str | None = None
 
 
+class NativeTelegramButtonSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    text: str
+    callback_data: str
+
+
+class NativeTelegramMessageSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    text: str
+    buttons: list[NativeTelegramButtonSpec]
+    force_reply: bool
+
+
+class NativeAgentTurnOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["awaiting_user", "done", "blocked"]
+    telegram_messages: list[NativeTelegramMessageSpec]
+    notes: str
+
+
+MAX_CANDIDATE_OPINION_WORDS = 90
+
+
 class OpinionCandidate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -49,12 +75,23 @@ class OpinionCandidate(BaseModel):
     opinion_text: str
     evidence_ids: list[str] = Field(min_length=1)
 
-    @field_validator("section", "opinion_text")
+    @field_validator("section")
     @classmethod
-    def require_non_empty_text(cls, value: str) -> str:
+    def require_non_empty_section(cls, value: str) -> str:
         value = value.strip()
         if not value:
             raise ValueError("must not be empty")
+        return value
+
+    @field_validator("opinion_text")
+    @classmethod
+    def require_concise_opinion_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("must not be empty")
+        word_count = len(value.split())
+        if word_count > MAX_CANDIDATE_OPINION_WORDS:
+            raise ValueError(f"must contain at most {MAX_CANDIDATE_OPINION_WORDS} words; found {word_count}")
         return value
 
     @field_validator("evidence_ids")
@@ -355,8 +392,7 @@ def build_candidate_validation_tool(*, context: AgentReadContext):
         except Exception as exc:
             return ToolResult(ok=False, content=str(exc))
         structure = [
-            (candidate.candidate_id, candidate.section, tuple(candidate.evidence_ids))
-            for candidate in candidates
+            (candidate.candidate_id, candidate.section, tuple(candidate.evidence_ids)) for candidate in candidates
         ]
         if validated_structure is None:
             validated_structure = structure
@@ -429,9 +465,7 @@ def build_evidence_fetch_tool(*, context: AgentReadContext):
             return ToolResult(ok=False, content=str(exc))
         selected = read_jsonl(context.selected_highlights_jsonl)
         selected_by_id = {str(row["highlight_id"]): row for row in selected}
-        missing_ids = [
-            evidence_id for evidence_id in candidate.evidence_ids if evidence_id not in selected_by_id
-        ]
+        missing_ids = [evidence_id for evidence_id in candidate.evidence_ids if evidence_id not in selected_by_id]
         if missing_ids:
             return ToolResult(
                 ok=False,
@@ -494,9 +528,7 @@ def build_consolidation_context_tool(*, context: AgentReadContext):
             candidate = find_opinion_candidate(context, args.candidate_id)
         except Exception as exc:
             return ToolResult(ok=False, content=str(exc))
-        selected_by_id = {
-            str(row["highlight_id"]): row for row in read_jsonl(context.selected_highlights_jsonl)
-        }
+        selected_by_id = {str(row["highlight_id"]): row for row in read_jsonl(context.selected_highlights_jsonl)}
         evidence = [selected_by_id[evidence_id] for evidence_id in candidate.evidence_ids]
         payload = {
             "candidate": candidate.model_dump(mode="json"),
@@ -525,11 +557,7 @@ def build_opinion_sources_tool(*, context: AgentReadContext):
         opinion_ids = {opinion.opinion_id for opinion in load_opinions(context.opinions_md).opinions}
         if args.opinion_id not in opinion_ids:
             return ToolResult(ok=False, content=f"existing opinion ID not found: {args.opinion_id}")
-        rows = [
-            row
-            for row in read_jsonl(context.sources_jsonl)
-            if str(row.get("opinion_id")) == args.opinion_id
-        ]
+        rows = [row for row in read_jsonl(context.sources_jsonl) if str(row.get("opinion_id")) == args.opinion_id]
         return ToolResult(ok=True, content=json.dumps(rows, ensure_ascii=False, indent=2))
 
     return ToolSpec(
@@ -610,7 +638,7 @@ def build_harness_config(*, context: AgentReadContext, settings: Settings):
         effort=settings.harness_reasoning_effort,
         request_timeout=300,
         system_prompt=build_system_prompt(),
-        output_type=NativeOutput(AgentTurnOutput),
+        output_type=NativeOutput(NativeAgentTurnOutput),
         output_mode="native",
         local_trace_dir=str(settings.local_trace_dir),
         local_tracing=settings.local_tracing_enabled,
@@ -656,10 +684,25 @@ async def _run_harness(
             build_validation_tool(settings=settings, run_dir=context.run_dir),
         ],
     ).run(prompt, resume_from=resume_state)
-    output = (
+    native_output = (
         result.output
-        if isinstance(result.output, AgentTurnOutput)
-        else AgentTurnOutput.model_validate(result.output)
+        if isinstance(result.output, NativeAgentTurnOutput)
+        else NativeAgentTurnOutput.model_validate(result.output)
+    )
+    output = AgentTurnOutput(
+        status=native_output.status,
+        telegram_messages=[
+            TelegramMessageSpec(
+                text=message.text,
+                buttons=[
+                    TelegramButtonSpec(text=button.text, callback_data=button.callback_data)
+                    for button in message.buttons
+                ],
+                force_reply=message.force_reply,
+            )
+            for message in native_output.telegram_messages
+        ],
+        notes=native_output.notes or None,
     )
     return output, result.resume_state
 
