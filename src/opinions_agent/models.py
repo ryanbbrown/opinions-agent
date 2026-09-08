@@ -31,7 +31,6 @@ class RunStatus(StrEnum):
     RUNNING_AGENT = "running_agent"
     AWAITING_USER = "awaiting_user"
     COMPLETED = "completed"
-    BLOCKED = "blocked"
     FAILED = "failed"
     ABANDONED = "abandoned"
 

@@ -93,6 +93,13 @@ After July 6–13 was started, subsequent next-week requests could not retrieve 
 - The deployed app's health endpoint still returns HTTP 200 and `{"status":"ok"}`, which includes its database connectivity check. Railway's public status page reports operational service; no wider outage is confirmed.
 - The cause remains unresolved in Railway's resource-read path. No service restart, code change, credential rotation, new cycle, or timer was used in this investigation.
 
+## July 20–27 stopped conversation
+
+- Cycle `6650f71b-8ae0-4c40-a56d-2ebe52a417db`, run `672c2edc-4a4c-4454-950e-37eac2faeefd`, stopped after the agent refused a user-requested change from revision to standalone opinion and selected `blocked`. The subsequent user correction reached Telegram storage but did not resume the terminal run.
+- Read-only inspection confirmed all four writable files match this run's saved baseline: opinions, sources, decisions, and the opinion-ID counter. The opinions checkout is clean at `78fbbe094db3da83f6c5fffed24e6ddef4ebdb84`. No artifact restoration is needed before retrying this batch.
+- The conversation-control fix permits user-requested changes to initial consolidation and removes agent-selected `blocked`. Replies to plain help messages can resume the conversation without buttons. Revised proposals still require approval; application errors still preserve recovery state.
+- Fix verification: 228 tests passed, 5 skipped; Ruff and Pyright passed. Deployment and retry remain pending. Retain the stopped attempt for history and retry the same fixed weekly batch rather than deleting the cycle or starting a later week.
+
 ## Verification
 
 `uv run pytest -q`: 228 passed, 5 skipped. `uv run ruff check .`: passed. `uv run pyright`: zero errors and warnings. The ripgrep deployment passed health and the 107-file source comparison. Ripgrep 14.1.1 successfully executed all three previously failing document searches. The dependency deployment preserved the awaiting retry without regenerating proposals; that retry subsequently completed through user approval. No application code was changed. Product-contract and operational documentation changes are committed separately from the pinned deployment.

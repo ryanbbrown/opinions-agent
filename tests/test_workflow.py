@@ -545,28 +545,52 @@ async def test_callback_data_must_match_stored_buttons(session, settings: Settin
     assert run.status == RunStatus.AWAITING_USER.value
 
 
-class BlockedAgent(OpinionAgent):
-    async def run_turn(self, **kwargs):
+class HelpSeekingAgent(OpinionAgent):
+    def __init__(self) -> None:
+        self.resumed_prompt: str | None = None
+        self.resumed_state: dict | None = None
+
+    async def run_turn(self, *, prompt_fragment, resume_state, **kwargs):
+        if resume_state is None:
+            return AgentTurnOutput(
+                status="awaiting_user",
+                telegram_messages=[TelegramMessageSpec(text="Which opinion should this evidence support?")],
+            ), {"conversation": "needs-direction"}
+        self.resumed_prompt = prompt_fragment
+        self.resumed_state = resume_state
         return AgentTurnOutput(
-            status="blocked",
-            telegram_messages=[TelegramMessageSpec(text="Manual intervention required.")],
-            notes="blocked by test",
-        ), None
+            status="done",
+            telegram_messages=[TelegramMessageSpec(text="No changes requested.")],
+        ), resume_state
 
 
-async def test_blocked_agent_marks_terminal_blocked_without_commit(
+async def test_reply_to_plain_help_message_resumes_same_conversation_without_artifact_edits(
     session, settings: Settings, opinions_repo: Path
 ) -> None:
     seed_corpus(settings)
     before = run_git(opinions_repo, "rev-parse", "HEAD")
     telegram = FakeTelegramClient()
+    agent = HelpSeekingAgent()
 
-    run = await start_run(session, settings, telegram, BlockedAgent())
+    run = await start_run(session, settings, telegram, agent)
+    assert run is not None
+    assert run.status == RunStatus.AWAITING_USER.value
+    outbound = outbound_for_run(session, run)
+    assert not telegram.sent[-1][1].buttons
+    assert not telegram.sent[-1][1].force_reply
+    assert run_git(opinions_repo, "status", "--porcelain") == ""
 
-    assert run.status == RunStatus.BLOCKED.value
-    assert run.failure_reason == "blocked by test"
-    assert telegram.sent[-1][1].text == "Manual intervention required."
+    result = await handle(
+        session, settings, telegram, reply_update(550, outbound, "Leave the opinions unchanged."), agent
+    )
+
+    assert result == "resumed"
+    assert agent.resumed_state == {"conversation": "needs-direction"}
+    assert "Leave the opinions unchanged." in (agent.resumed_prompt or "")
+    assert run.status == RunStatus.COMPLETED.value
+    assert run.turn_seq == 2
     assert run_git(opinions_repo, "rev-parse", "HEAD") == before
+    assert run_git(opinions_repo, "status", "--porcelain") == ""
 
 
 class NoopDoneAgent(OpinionAgent):

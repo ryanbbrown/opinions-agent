@@ -78,13 +78,11 @@ VALID_TRANSITIONS = {
     RunStatus.RUNNING_AGENT.value: {
         RunStatus.AWAITING_USER.value,
         RunStatus.COMPLETED.value,
-        RunStatus.BLOCKED.value,
         RunStatus.FAILED.value,
         RunStatus.ABANDONED.value,
     },
     RunStatus.AWAITING_USER.value: {RunStatus.RUNNING_AGENT.value, RunStatus.FAILED.value, RunStatus.ABANDONED.value},
     RunStatus.COMPLETED.value: set(),
-    RunStatus.BLOCKED.value: set(),
     RunStatus.FAILED.value: {RunStatus.COMPLETED.value},
     RunStatus.ABANDONED.value: set(),
 }
@@ -383,15 +381,6 @@ async def _execute_claimed_turn(
         session.commit()
         await send_agent_messages(session=session, settings=settings, telegram=telegram, run=run, output=output)
         return
-    if output.status == "blocked":
-        transition(run, RunStatus.BLOCKED)
-        run.lease_owner = None
-        run.lease_expires_at = None
-        run.failure_reason = output.notes or "agent returned blocked"
-        _stop_cycle(session, run, "agent_blocked", "The opinion agent needs manual intervention.")
-        session.commit()
-        await send_agent_messages(session=session, settings=settings, telegram=telegram, run=run, output=output)
-        return
     if output.status == "done":
         session.commit()
         await _complete_done_run(session=session, settings=settings, telegram=telegram, run=run, output=output)
@@ -502,15 +491,13 @@ async def _complete_done_run(
             await send_cycle_failure_notice(session=session, settings=settings, telegram=telegram, run=run)
         else:
             phase = "after commit handling" if commit_boundary_finished else "before commit"
-            await send_agent_messages(
+            await _send_idempotent(
                 session=session,
                 settings=settings,
                 telegram=telegram,
-                run=run,
-                output=AgentTurnOutput(
-                    status="blocked",
-                    telegram_messages=[TelegramMessageSpec(text=f"Opinion run failed {phase}.")],
-                ),
+                key=f"opinion-run:{run.id}:failed",
+                run_id=run.id,
+                spec=TelegramMessageSpec(text=f"Opinion run failed {phase}."),
             )
         raise
     try:
@@ -1063,10 +1050,11 @@ def _responses_by_message(session: Session, run: OpinionRun) -> dict[int, Telegr
 
 
 def _current_turn_ready(session: Session, run: OpinionRun) -> bool:
-    expected = [outbound for outbound in _current_turn_outbounds(session, run) if _requires_response(outbound)]
-    if not expected:
-        return False
+    outbounds = _current_turn_outbounds(session, run)
+    expected = [outbound for outbound in outbounds if _requires_response(outbound)]
     responses = _responses_by_message(session, run)
+    if not expected:
+        return any(outbound.message_id in responses for outbound in outbounds)
     return all(outbound.message_id in responses for outbound in expected)
 
 
@@ -1085,7 +1073,7 @@ def _responses_prompt(session: Session, run: OpinionRun) -> str:
         "- Never infer approval from a free-text reply.",
     ]
     for outbound in _current_turn_outbounds(session, run):
-        if not _requires_response(outbound) or outbound.message_id not in responses:
+        if outbound.message_id not in responses:
             continue
         response = responses[outbound.message_id]
         blocks.extend(

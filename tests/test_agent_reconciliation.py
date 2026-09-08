@@ -59,6 +59,7 @@ def test_native_agent_output_requires_explicit_message_controls() -> None:
 
     assert request is not None
     assert request.strict is True
+    assert output_schema.schema["properties"]["status"]["enum"] == ["awaiting_user", "done"]
     assert set(message_schema["required"]) == {"text", "buttons", "force_reply"}
     assert (
         NativeAgentTurnOutput.model_validate(

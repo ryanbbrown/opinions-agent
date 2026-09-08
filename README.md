@@ -47,7 +47,8 @@ PostgreSQL owns cycles, batches, evidence assignments, leases, runs, Telegram id
 3. The main agent writes independent candidates of at most 90 words to the active run's `candidate-opinions.jsonl`,
    then runs the existing omission-only fidelity critic once per candidate by candidate ID. After applying critic
    feedback, it runs one
-   read-only consolidator per candidate. The post-critic candidate file then stays frozen. Each consolidator result
+   read-only consolidator per candidate. Later Telegram feedback may change that initial operation; the agent
+   requests approval for the revised proposal before applying it. The post-critic candidate file then stays frozen. Each consolidator result
    starts with a required reasoning string, followed by one of three operations: keep the complete candidate new; attach all or part of its evidence to one existing opinion without
    changing that opinion's text; or attach all or part of its evidence and replace that opinion's text with a complete
    revision. For a partial evidence move, the main agent writes a residual add proposal around the remaining evidence.
@@ -62,7 +63,8 @@ PostgreSQL owns cycles, batches, evidence assignments, leases, runs, Telegram id
 6. Exact uppercase `GO` and `SKIP` from `TELEGRAM_ALLOWED_CHAT_ID` resume the same agent conversation immediately as
    concrete user input. The app does not interpret these commands as proposal accept/reject decisions.
 7. The agent writes the opinion artifacts directly when the conversation has enough approval or revision context, calls
-   the same validator the app uses, and returns `done` or `blocked`.
+   the same validator the app uses, and returns `done`. If it needs help, it asks in Telegram and returns
+   `awaiting_user`; only app-owned technical failures stop the run.
 8. After `done`, the app validates once more, rejects unrelated staged files, stages only `OPINIONS.md` and
    `OPINIONS_SOURCES.jsonl`, commits/pushes those files if changed, updates the opinion-ID high-water mark, advances
    the evidence assignment, and only then sends final success-style Telegram messages. The worker queues the next

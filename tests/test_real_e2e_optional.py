@@ -77,8 +77,7 @@ Approve
     else:
         pytest.fail("real agent did not converge after 5 resume turns")
 
-    assert output.status in {"done", "blocked"}
+    assert output.status == "done"
     assert output.telegram_messages
-    if output.status == "done":
-        run_artifact_validation(settings=settings, run_dir=context.run_dir)
-        assert "commit" not in " ".join(message.text.lower() for message in output.telegram_messages)
+    run_artifact_validation(settings=settings, run_dir=context.run_dir)
+    assert "commit" not in " ".join(message.text.lower() for message in output.telegram_messages)

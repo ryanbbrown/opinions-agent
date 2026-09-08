@@ -36,7 +36,7 @@ class TelegramMessageSpec(BaseModel):
 
 
 class AgentTurnOutput(BaseModel):
-    status: Literal["awaiting_user", "done", "blocked"]
+    status: Literal["awaiting_user", "done"]
     telegram_messages: list[TelegramMessageSpec] = Field(default_factory=list)
     notes: str | None = None
 
@@ -59,7 +59,7 @@ class NativeTelegramMessageSpec(BaseModel):
 class NativeAgentTurnOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    status: Literal["awaiting_user", "done", "blocked"]
+    status: Literal["awaiting_user", "done"]
     telegram_messages: list[NativeTelegramMessageSpec]
     notes: str
 
