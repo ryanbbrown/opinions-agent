@@ -200,14 +200,18 @@ Create two Railway services from this repository. Give the web service `railway.
 - Register `https://<web-domain>/telegram/webhook` with `set-telegram-webhook`. Use the configured webhook secret.
 - Enable Railway volume backups for the mounted data directory; the opinions repo is separately durable via git.
 
-For staging, use separate PostgreSQL, volume, and Telegram credentials. Set `OPINIONS_ENVIRONMENT=staging` and
-`OPINIONS_REPO_BRANCH=staging`. Set production to `OPINIONS_ENVIRONMENT=prod` and `OPINIONS_REPO_BRANCH=main`.
-Both environments use `OPINIONS_TARGET_FILE=OPINIONS.md`. Both require
-`OPINIONS_SOURCES_FILE=OPINIONS_SOURCES.jsonl` and an explicit `OPINIONS_INITIAL_EVIDENCE_AFTER` timestamp. This
-timestamp is the oldest evidence version that the first cycle can assign.
+Use one production environment: `OPINIONS_ENVIRONMENT=prod`, `OPINIONS_REPO_BRANCH=main`,
+`OPINIONS_TARGET_FILE=OPINIONS.md`, and `OPINIONS_SOURCES_FILE=OPINIONS_SOURCES.jsonl`.
+The starting artifacts combine the checked-in pre-W04 seed with all reviewed targets through W13: 46 opinions and
+94 source rows. Keep the checked-in eval seed unchanged. Fresh production uses a new database and volume, empty agent
+history, and an opinion-ID high-water mark of 46; old production IDs and history are not imported.
+Set `OPINIONS_INITIAL_EVIDENCE_AFTER=2026-06-15T00:00:00Z`. The approved test set defines the earlier period; no
+historical completeness audit is required. Catch up one complete week at a time, with user review in Telegram.
 
-Complete one staging cycle before production. Test a repeated same-week start and one stopped-batch retry. Then enable
-backups and promote the same commit and configuration shape to production.
+There is no separate staging gate. Validate the first real cycle, repeated same-week starts, and fixed-batch retry
+when needed. Keep automatic GitHub deployments disabled and deploy application revisions explicitly. Enable the Monday
+cron after catch-up. Production traces use the UUID of the separate Braintrust project `opinions-agent-runs`; evals
+keep their existing project. See the [fresh production plan](.plans/fresh-production-start.md).
 
 Smoke checklist after a deploy:
 

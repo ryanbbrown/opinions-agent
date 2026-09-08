@@ -68,7 +68,7 @@ Each opinion run deterministically selects the evidence window, writes an inspec
 - RUN-16B: A weekly window ends exactly seven days after it starts. A cycle cannot include evidence from a later weekly window.
 - RUN-16C: Weekly windows use UTC boundaries from Monday at 00:00 through the next Monday at 00:00.
 - RUN-17: PostgreSQL assigns each evidence ID and content fingerprint to one cycle. Changed content creates a new eligible evidence version.
-- RUN-18: A first deployed cycle requires a fixed launch boundary. Older evidence versions become an ignored baseline.
+- RUN-18: A first deployed cycle requires a fixed launch boundary. Older evidence versions become an ignored baseline. The fresh production baseline is the current checked-in seed plus reviewed targets through W13; production starts June 15, 2026 at 00:00 UTC. The approved test set is authoritative for the earlier period, without a historical evidence-completeness audit.
 - RUN-19: A cycle uses one batch only below both limits of 20 documents and 50 evidence rows.
 - RUN-20: Reaching either limit creates at least two balanced batches. No batch can exceed either limit.
 - RUN-21: The partition keeps documents whole when each batch remains within half to one-and-a-half times its equal row target.
@@ -159,7 +159,7 @@ Accepted opinions and accepted supporting evidence are durable artifacts owned b
 ### Requirements
 
 - OPINIONS-1: `OPINIONS.md` stores the current accepted opinions.
-- OPINIONS-2: Each opinion has a stable `opinion-000001` style ID stored as a hidden HTML comment directly under the opinion it identifies.
+- OPINIONS-2: Each opinion has a stable `opinion-000001` style ID stored as a hidden HTML comment directly under the opinion it identifies. Fresh production preserves IDs from the current reviewed baseline. Archived production IDs and allocation history impose no constraints; ID stability and non-reuse apply within the new production history.
 - OPINIONS-3: The canonical `OPINIONS.md` format is grouped by `##` section headings, with each opinion represented as one Markdown bullet line followed by indented metadata comments. The bullet is usually one sentence but may contain multiple sentences on the same Markdown line.
 - OPINIONS-4: Opinion metadata comments use this shape:
 
@@ -202,9 +202,9 @@ Approved changes become durable only after the app validates, commits, and pushe
 - GIT-9: Restart recovery reconciles stored commit data with local and remote commits before it starts agent work again.
 - GIT-10: Failed edits are archived, and only configured writable artifacts are restored from their recorded baseline.
 - GIT-11: A retry creates a new run for the stored batch. It never repeats a pushed batch.
-- GIT-12: Deployed staging writes `OPINIONS.md` and `OPINIONS_SOURCES.jsonl` only on the `staging` branch.
-- GIT-13: Deployed production writes the same artifact names only on the `main` branch.
-- GIT-14: Staging and production use separate runtime volumes and databases, so their decision context and workflow state remain isolated.
+- GIT-12: There is one deployed production environment, with no separate staging gate. The user reviews the first real cycle in Telegram.
+- GIT-13: Production writes `OPINIONS.md` and `OPINIONS_SOURCES.jsonl` only on the opinions repository's `main` branch.
+- GIT-14: Fresh production owns a new database and runtime volume. Old production is a separate recovery archive, never an input or rollback target for the new runtime.
 
 ## Evals And Observability
 
@@ -220,7 +220,7 @@ Opinion quality is measured by running the initial proposal phase against human-
 - EVAL-3A: Checked-in evidence availability overrides can delay selected evidence to the week when it was fully processed. Evals apply these timestamps only to disposable corpus copies and dataset selection; they do not change the synced Reader corpus.
 - EVAL-4: Eval runs use fake Telegram, stop after the initial proposal phase, and cannot touch the real opinions repository.
 - EVAL-5: Eval scoring covers deterministic evidence conversion recall and precision, plus an LLM judge that grades generated opinions against the canonical opinion text and its source evidence. Judge calls route through the Braintrust proxy.
-- EVAL-6: Eval executions land in Braintrust as experiments. Dev and production agent runs land as logs in the same Braintrust project, stamped with an environment tag that defaults to `dev` locally and `prod` on Railway.
+- EVAL-6: Eval executions land as experiments in the existing Braintrust eval project. Production agent runs land as logs in the separate `opinions-agent-runs` project, stamped `prod`. Local runs retain their configured project and default `dev` tag.
 - EVAL-7: Braintrust traces carry the same full capture detail as local traces: messages, tool arguments, and tool results.
 - EVAL-8: Eval v1 remains the historical proposal-content benchmark. Eval v2 runs the same cases and preserves the v1 quality score while also requiring each matched proposal to use the canonical add or update operation.
 - EVAL-9: Eval v2 gives operation-gated quality credit only when conceptual quality passes and the proposal adds a canonical add target or revises the canonical base opinion for an update target. It reports operation correctness separately so content and routing failures remain distinguishable.

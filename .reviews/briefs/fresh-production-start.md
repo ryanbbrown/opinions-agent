@@ -40,7 +40,7 @@ For approval before implementation. Plan: [fresh production start](../../.plans/
 - If wrong: An archive ID cannot safely identify an opinion in new production. The archive is not used by the new agent.
 
 ### D4. Publish only the new opinion artifacts
-- What: Replace the live opinions repository's two artifacts with a normal Git commit. Preserve the old commit with an archive tag; do not add more `*_vOld` files or rewrite Git history.
+- What: Replace the live opinions repository's two artifacts with a normal Git commit. Existing Git history preserves the old commit; do not add archive tags, more `*_vOld` files, or rewrite Git history.
 - Instead of: A new opinions repository or a force-push. Keeping the repository preserves the existing destination without importing old runtime state.
 - If wrong: Existing readers of the live files immediately see the reviewed baseline instead of the old production opinions.
 
@@ -74,12 +74,11 @@ For approval before implementation. Plan: [fresh production start](../../.plans/
 - If wrong: Source main and the deployed revision differ intentionally. Releases require an explicit deployment step.
 
 ### D11. Archive old state, recover only within the new runtime
-- What: Preserve a consistent database dump, volume archive, Git refs, and protected configuration before replacement. Verify the copies. Retain old resources until cleanup approval, but never reconnect them as a rollback target.
-- Mechanism: Stop the old worker before copying state and verify configuration changes cannot restart it. Fresh production receives its own backups. On failure, retain and recover the new state; ask before a restore that would discard approvals.
-- Instead of: Deleting the only old copies immediately, or designing backward-compatible restoration into the new deployment.
-- If wrong: Retained resources may continue to cost money until cleanup. The old archive is not an automatic production fallback.
+- What: Store a PostgreSQL dump, compressed `/data` copy, and non-secret manifest in the private local directory `~/code/opinions-agent-backups/2026-09-08/`. Existing Git history retains the old opinions.
+- Mechanism: Stop the old worker before copying state. Check archive listings and checksums, with no full restore rehearsal. After verifying the local copies and connecting fresh state, remove old Railway resources. Fresh production receives its own backups.
+- Instead of: A second hosted recovery environment, extended defensive testing, or backward-compatible restoration into production.
+- If wrong: The archive is recoverable local data, not a tested automatic production fallback. Never restore it into the new runtime.
 
 ## Questions
 
-- Approve this decision brief before implementation or additional review panels.
-- `/implement` requires both review counts. Recommended: `p0 i1`—no additional plan panel after the completed Fable review, and one implementation-review panel. The Fable review was a single reviewer, not a completed multi-reviewer panel cycle.
+- The user approved direct execution by the parent agent, without the implement skill, an implementation child, or additional review panels.
