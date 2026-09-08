@@ -28,7 +28,7 @@ For approval before implementation. Plan: [fresh production start](../../.plans/
 - If wrong: The first real cycle can fail in production rather than staging. We stop and repair the new run without reviving the old runtime.
 
 ### D2. Use the current reviewed content through W13
-- What: Generate the full production seed from the current local baseline and every reviewed target through W13. Expected output is 46 opinions and 94 source pairs covering 94 distinct evidence rows. Keep the app repository's checked-in pre-W04 seed unchanged for evals.
+- What: Generate the full production seed from the current local baseline and every reviewed target through W13. Expected output is 46 opinions and 94 source pairs covering 94 distinct evidence rows. Keep the app repository's checked-in pre-W04 seed unchanged for evals. The user's approved set is authoritative for its covered period; missing older highlights are intentionally out of scope and require no completeness check.
 - Mechanism: Apply targets chronologically, including revisions and W13 itself; resolve full provenance from the reviewed corpus and validate every opinion and source row before publishing.
 - Instead of: Copying old production opinions, copying model-generated eval proposals, or using the pre-W04 seed alone. Those do not represent the current reviewed result.
 - If wrong: Production starts with missing or outdated opinions, and later proposals consolidate against the wrong content.
@@ -49,12 +49,6 @@ For approval before implementation. Plan: [fresh production start](../../.plans/
 - Mechanism: Each weekly-cycle request selects the next seven-day window from fresh PostgreSQL progress. Finish every batch and its approved Git changes before requesting the next week. Freeze the catch-up end even if execution crosses another Monday.
 - Instead of: Continuing from the old August progress marker or replaying the reviewed test set. Both contradict the agreed starting state.
 - If wrong: An incorrect boundary either misses evidence or re-proposes content already in the reviewed baseline.
-
-### D6. Use fresh Reader data, not eval runtime fixtures
-- What: Fresh-sync the Reader corpus with normal source timestamps. Keep eval availability overrides, databases, run directories, and conversation state out of production.
-- Mechanism: Before launch, compare fresh pre-boundary evidence with the reviewed corpus. Report new or changed pre-boundary evidence and missing timestamps before the normal launch boundary can ignore it. Ask about actual discrepancies, not a hypothetical loss.
-- Instead of: Copying the local eval corpus as production truth or silently treating every old-dated row as reviewed.
-- If wrong: Evidence never reviewed in the test set could be skipped. This check stops launch for a decision rather than silently dropping it.
 
 ### D7. Clear retired Telegram input before new proposals exist
 - What: Reuse the bot and webhook but discard pending cutover updates. Do not resume or approve the old proposals.
