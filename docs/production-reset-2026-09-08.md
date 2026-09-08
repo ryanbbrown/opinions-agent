@@ -37,9 +37,18 @@ The fresh production deployment is live. Catch-up starts June 15 and ends Septem
 - First attempt `fd03979c-4935-4c10-b849-a41c06041de2` generated eight candidates and reached native Telegram proposal output, but sending the first proposal failed with a connection-establishment error (`ConnectError`). Start/failure notices were recorded; no opinion changes were committed. Both opinion artifact hashes still matched the seed.
 - A read-only Telegram connectivity check then succeeded. The existing `retry-cycle` command queued the same stored batch once. Retry `723fea2e-0515-485b-b411-35fab2d7e458` reached `awaiting_user`, with all eight proposal messages sent. No new evidence selection, database reset, code change, or synthetic approval was used.
 - June 15–22 completed at commit `ae3505d26b73175552182ab44eeb9b7dfbcbd7fd`, present at both the clean volume checkout and the opinions repository's remote main. Approvals were #1, #2, #6, and #8; rejections were #3, #4, #5, and #7. All 46 starting opinions remain unchanged, with four additions and six new evidence rows: 50 opinions and 100 unique source pairs/evidence IDs. Only the two configured opinion artifacts changed, and the final Telegram success message was sent after completion.
-- Catch-up is not complete. June 22–29 is the next unstarted window.
+- Catch-up is not complete. June 29–July 6 is the next unstarted window.
 - A detailed retry trace check confirmed eight critic calls, eight consolidator calls, eight candidates of 34–61 words, and 10 unique candidate evidence links. Telegram recorded all eight proposal messages as sent, IDs 245–252.
 - The detailed trace check found three document-search failures in the first image because it lacked `rg`. The web runtime package setting is `RAILPACK_DEPLOY_APT_PACKAGES="git ripgrep"`; the application source remains pinned. One selected highlight has empty text and note fields, which appears as a title/ID without a quote in the first proposal. These issues were not detected by the initial delivery/trace-receipt checks. The scheduled catch-up monitor remains paused. The first cycle has completed through normal Telegram approval.
+
+## Second cycle: June 22–29
+
+- Cycle `b2248a4d-b439-454c-981e-9fb475359b4f`, run `6d51e612-1c45-454e-b11b-aae29965e185`, completed through three agent turns. Seven evidence rows produced four candidates, each 49–74 words, with unique evidence ownership.
+- Inspection covered 100 Braintrust spans across the initial proposal, feedback, and final approval turns. No model/tool errors or failed tool outputs were present. Four critic calls and four consolidator calls completed; document search worked.
+- Four initial Telegram proposals and two revised proposals matched the traced message text and buttons exactly and had real sent message IDs. The final success message matched the agent text with the app's durability suffix.
+- The user approved the first two proposals, requested a separate opinion instead of one revision, and requested that another revision retain simplification as models improve. The agent preserved those pending opinions until the revised proposals were explicitly approved. Earlier artifact edits covered only the already-approved proposals.
+- Commit `cd2c3f2ad404be262e51785a03f5093247120e64` added two opinions, revised two, and attached seven evidence rows. Validation passed: 52 opinions, 107 source rows, and high-water mark 52. There are no duplicate evidence assignments. Only the two configured opinion artifacts changed; the clean checkout HEAD matches remote main.
+- No further week was started by this inspection. Ten complete weeks remain through September 7 at 00:00 UTC. No follow-up approval monitor is queued.
 
 ## Comparison with the original first production week
 
