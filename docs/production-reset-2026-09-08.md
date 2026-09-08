@@ -5,7 +5,7 @@ The fresh production deployment is live. Catch-up starts June 15 and ends Septem
 ## Deployment and state
 
 - Application source: `2526a50c7187558776396698d162a40c09dfdacc`.
-- Railway web deployment: `737e8bb5-e66f-41da-a608-a361a630b986`, using the existing project and web service.
+- Railway web deployment: `89ff52f0-5861-4d3d-a6aa-03cb668d48f5`, using the existing project and web service. It uses the same pinned application source with `git ripgrep` as runtime packages.
 - Deployment input was a clean `git archive` of that SHA, uploaded with `railway up --path-as-root`. All 107 tracked source files were verified by SHA-256 against the live container. This upload has no Git commit metadata in Railway; the source comparison is the revision check.
 - GitHub deployment triggers were removed from both app services. Weekly cron is paused until catch-up completes. The cron service still has its old build; deploy the pinned archive with its existing cron config before reenabling the schedule.
 - Fresh PostgreSQL service: `Postgres-I2d7`, ID `5cf436f8-633d-4bd2-9879-e48b20a037f5`; database volume `0e81312b-50d5-4e6c-a41f-ad719d6bdadb`.
@@ -38,7 +38,7 @@ The fresh production deployment is live. Catch-up starts June 15 and ends Septem
 - A read-only Telegram connectivity check then succeeded. The existing `retry-cycle` command queued the same stored batch once. Retry `723fea2e-0515-485b-b411-35fab2d7e458` reached `awaiting_user`, with all eight proposal messages sent. No new evidence selection, database reset, code change, or synthetic approval was used.
 - Catch-up is not complete. Later weeks must wait for the current cycle's user review and successful completion.
 - A detailed retry trace check confirmed eight critic calls, eight consolidator calls, eight candidates of 34–61 words, and 10 unique candidate evidence links. Telegram recorded all eight proposal messages as sent, IDs 245–252.
-- The trace also showed three failed document-search calls because `rg` is absent from the deployed image. One selected highlight has empty text and note fields, which appears as a title/ID without a quote in the first proposal. These issues were not detected by the initial delivery/trace-receipt checks. The scheduled catch-up monitor is paused pending review; the current run remains awaiting user input.
+- The detailed trace check found three document-search failures in the first image because it lacked `rg`. The web runtime package setting is `RAILPACK_DEPLOY_APT_PACKAGES="git ripgrep"`; the application source remains pinned. One selected highlight has empty text and note fields, which appears as a title/ID without a quote in the first proposal. These issues were not detected by the initial delivery/trace-receipt checks. The scheduled catch-up monitor is paused pending review; the current run remains awaiting user input.
 
 ## Recovery and cleanup
 
@@ -59,4 +59,4 @@ The directory is private. No full restore rehearsal was performed. The old Postg
 
 ## Verification
 
-`uv run pytest -q`: 228 passed, 5 skipped. `uv run ruff check .`: passed. `uv run pyright`: zero errors and warnings. No application code was changed. Product-contract and operational documentation changes are committed separately from the pinned deployment.
+`uv run pytest -q`: 228 passed, 5 skipped. `uv run ruff check .`: passed. `uv run pyright`: zero errors and warnings. The ripgrep deployment passed health and the 107-file source comparison. Ripgrep 14.1.1 successfully executed all three previously failing document searches. The existing retry remains awaiting user input; no proposals were regenerated. No application code was changed. Product-contract and operational documentation changes are committed separately from the pinned deployment.
