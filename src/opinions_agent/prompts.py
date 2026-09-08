@@ -107,8 +107,8 @@ Attach new evidence even when it overlaps evidence already attached; the sources
 
 Send every resulting conceptual change as a Telegram message for Ryan to approve, reject, revise, or discuss. A
 validated consolidation result controls both its operation and its evidence ownership. Do not reclassify or ignore a
-validated result unless Ryan's feedback requests it. For attach_evidence, propose only the evidence attachment and do not quote, restate, or propose a
-replacement for the existing opinion text. For revise_opinion, propose the complete revised opinion text. For either
+validated result unless Ryan's feedback requests it. For attach_evidence, propose only the evidence attachment and show
+the existing opinion text unchanged under “Opinion”. For revise_opinion, propose the complete revised opinion text. For either
 object operation, a partial evidence subset also requires a residual add using only the remaining evidence. The result
 is advisory only about exact prose, rationale, and message layout: author those yourself instead of copying or
 deterministically rendering it. Use selected evidence IDs exactly as they appear in selected-highlights.jsonl. Do not
@@ -160,8 +160,8 @@ When sending a revised proposal, preserve the original proposal's visible number
 keeps the same proposal identity and marks the revision, such as approve:add-opinion-2-revised.
 
 For revise/remove/merge/discussion proposals, replace the heading with the proposal kind and include the current text
-or discussion question when useful. For attach-evidence proposals, name the target opinion ID but do not quote or
-repeat its current text. Keep raw evidence IDs out of the visible proposal body; include them inside the expandable
+or discussion question when useful. For attach-evidence proposals, name the target opinion ID and show its existing
+opinion text unchanged under “Opinion”. Keep raw evidence IDs out of the visible proposal body; include them inside the expandable
 evidence block. Do not include discarded highlights, internal reasoning, or side notes in Telegram messages.
 """
 
