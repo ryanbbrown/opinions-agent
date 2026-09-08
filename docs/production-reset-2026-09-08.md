@@ -84,6 +84,15 @@ The directory is private. No full restore rehearsal was performed. The old Postg
 - The Railway volume-add CLI panicked; the documented GraphQL create operation succeeded. CLI deletion timed out; explicit GraphQL deletes succeeded and their resulting state was verified.
 - Daily backup scheduling for the fresh volumes returned `Not Authorized`. Neither fresh volume has a confirmed automatic backup schedule. This remains an operational blocker for automatic backups; no credential or account-tier changes were made to bypass it.
 
+## Next-week start blocked by Railway API reads
+
+After July 6–13 was started, subsequent next-week requests could not retrieve the start credential from Railway. The start endpoint was never called by those failed attempts.
+
+- `railway whoami` and project listing succeed; the project still appears accessible. No `RAILWAY_*` environment variables override authentication.
+- Project, service, deployment, and variable reads fail with `Problem processing request`, including direct GraphQL calls with explicit IDs. This is not limited to CLI name resolution. Example Railway trace IDs: `2595427158258200897` (minimal project read) and `2192832016895126309` (variables read).
+- The deployed app's health endpoint still returns HTTP 200 and `{"status":"ok"}`, which includes its database connectivity check. Railway's public status page reports operational service; no wider outage is confirmed.
+- The cause remains unresolved in Railway's resource-read path. No service restart, code change, credential rotation, new cycle, or timer was used in this investigation.
+
 ## Verification
 
 `uv run pytest -q`: 228 passed, 5 skipped. `uv run ruff check .`: passed. `uv run pyright`: zero errors and warnings. The ripgrep deployment passed health and the 107-file source comparison. Ripgrep 14.1.1 successfully executed all three previously failing document searches. The dependency deployment preserved the awaiting retry without regenerating proposals; that retry subsequently completed through user approval. No application code was changed. Product-contract and operational documentation changes are committed separately from the pinned deployment.
