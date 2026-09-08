@@ -37,7 +37,7 @@ The fresh production deployment is live. Catch-up starts June 15 and ends Septem
 - First attempt `fd03979c-4935-4c10-b849-a41c06041de2` generated eight candidates and reached native Telegram proposal output, but sending the first proposal failed with a connection-establishment error (`ConnectError`). Start/failure notices were recorded; no opinion changes were committed. Both opinion artifact hashes still matched the seed.
 - A read-only Telegram connectivity check then succeeded. The existing `retry-cycle` command queued the same stored batch once. Retry `723fea2e-0515-485b-b411-35fab2d7e458` reached `awaiting_user`, with all eight proposal messages sent. No new evidence selection, database reset, code change, or synthetic approval was used.
 - June 15–22 completed at commit `ae3505d26b73175552182ab44eeb9b7dfbcbd7fd`, present at both the clean volume checkout and the opinions repository's remote main. Approvals were #1, #2, #6, and #8; rejections were #3, #4, #5, and #7. All 46 starting opinions remain unchanged, with four additions and six new evidence rows: 50 opinions and 100 unique source pairs/evidence IDs. Only the two configured opinion artifacts changed, and the final Telegram success message was sent after completion.
-- Catch-up is not complete. June 29–July 6 is the next unstarted window.
+- Catch-up is not complete. Cycles through July 6 are completed; July 6–13 is active. The user requests later starts explicitly, without scheduled monitoring or routine post-run inspection.
 - A detailed retry trace check confirmed eight critic calls, eight consolidator calls, eight candidates of 34–61 words, and 10 unique candidate evidence links. Telegram recorded all eight proposal messages as sent, IDs 245–252.
 - The detailed trace check found three document-search failures in the first image because it lacked `rg`. The web runtime package setting is `RAILPACK_DEPLOY_APT_PACKAGES="git ripgrep"`; the application source remains pinned. One selected highlight has empty text and note fields, which appears as a title/ID without a quote in the first proposal. These issues were not detected by the initial delivery/trace-receipt checks. The scheduled catch-up monitor remains paused. The first cycle has completed through normal Telegram approval.
 
@@ -49,6 +49,14 @@ The fresh production deployment is live. Catch-up starts June 15 and ends Septem
 - The user approved the first two proposals, requested a separate opinion instead of one revision, and requested that another revision retain simplification as models improve. The agent preserved those pending opinions until the revised proposals were explicitly approved. Earlier artifact edits covered only the already-approved proposals.
 - Commit `cd2c3f2ad404be262e51785a03f5093247120e64` added two opinions, revised two, and attached seven evidence rows. Validation passed: 52 opinions, 107 source rows, and high-water mark 52. There are no duplicate evidence assignments. Only the two configured opinion artifacts changed; the clean checkout HEAD matches remote main.
 - No further week was started by this inspection. Ten complete weeks remain through September 7 at 00:00 UTC. No follow-up approval monitor is queued.
+
+## Third cycle: June 29–July 6
+
+- Cycle `29f79d4c-67f8-4b25-bc7b-ce052f9c9690`, run `3db47879-b93f-403d-8849-fd5badef1d69`, completed after user review. Its technical inspection covered the first two turns, before final approval. Thirteen evidence rows produced ten candidates of 41–63 words, with unique selected-evidence ownership.
+- Inspection covered 147 Braintrust spans across generation and feedback. No model/tool errors or failed tool outputs were present. All ten critic and ten consolidator calls completed; document search worked.
+- All ten initial proposals (Telegram IDs 265–274) and the requested standalone replacement for proposal #5 (ID 276) were sent with text and buttons matching traced output. At inspection, the other nine proposals had recorded approve/reject responses and #5 awaited its revised decision. A later start-boundary check confirmed the cycle completed.
+- No opinion artifacts were edited before this inspection. The volume checkout is clean at `cd2c3f2ad404be262e51785a03f5093247120e64`, matching remote main. There are no duplicate evidence assignments.
+- July 6–13 was then started at the user's request as cycle `64601029-f1fe-4fb4-a0ef-aa7b0b0aecc2`, with one batch. No timer or post-run inspection was scheduled.
 
 ## Comparison with the original first production week
 
