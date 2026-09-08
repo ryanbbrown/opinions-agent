@@ -36,9 +36,19 @@ The fresh production deployment is live. Catch-up starts June 15 and ends Septem
 - The database recorded 193 ignored baseline versions and 10 cycle assignments. These are fresh assignments, not copied old progress.
 - First attempt `fd03979c-4935-4c10-b849-a41c06041de2` generated eight candidates and reached native Telegram proposal output, but sending the first proposal failed with a connection-establishment error (`ConnectError`). Start/failure notices were recorded; no opinion changes were committed. Both opinion artifact hashes still matched the seed.
 - A read-only Telegram connectivity check then succeeded. The existing `retry-cycle` command queued the same stored batch once. Retry `723fea2e-0515-485b-b411-35fab2d7e458` reached `awaiting_user`, with all eight proposal messages sent. No new evidence selection, database reset, code change, or synthetic approval was used.
-- Catch-up is not complete. Later weeks must wait for the current cycle's user review and successful completion.
+- June 15–22 completed at commit `ae3505d26b73175552182ab44eeb9b7dfbcbd7fd`, present at both the clean volume checkout and the opinions repository's remote main. Approvals were #1, #2, #6, and #8; rejections were #3, #4, #5, and #7. All 46 starting opinions remain unchanged, with four additions and six new evidence rows: 50 opinions and 100 unique source pairs/evidence IDs. Only the two configured opinion artifacts changed, and the final Telegram success message was sent after completion.
+- Catch-up is not complete. June 22–29 is the next unstarted window.
 - A detailed retry trace check confirmed eight critic calls, eight consolidator calls, eight candidates of 34–61 words, and 10 unique candidate evidence links. Telegram recorded all eight proposal messages as sent, IDs 245–252.
-- The detailed trace check found three document-search failures in the first image because it lacked `rg`. The web runtime package setting is `RAILPACK_DEPLOY_APT_PACKAGES="git ripgrep"`; the application source remains pinned. One selected highlight has empty text and note fields, which appears as a title/ID without a quote in the first proposal. These issues were not detected by the initial delivery/trace-receipt checks. The scheduled catch-up monitor is paused pending review; the current run remains awaiting user input.
+- The detailed trace check found three document-search failures in the first image because it lacked `rg`. The web runtime package setting is `RAILPACK_DEPLOY_APT_PACKAGES="git ripgrep"`; the application source remains pinned. One selected highlight has empty text and note fields, which appears as a title/ID without a quote in the first proposal. These issues were not detected by the initial delivery/trace-receipt checks. The scheduled catch-up monitor remains paused. The first cycle has completed through normal Telegram approval.
+
+## Comparison with the original first production week
+
+The archived June 15–22 batch (`557acb0f-1c08-4c60-93e0-f610bcab53fd`, successful run `232d4519-bed4-4faa-af43-e646b482e57c`) contains exactly the same 10 selected evidence rows as the fresh batch, with no changed fields. The difference is proposal generation and routing, not evidence selection.
+
+- Both runs proposed frontier-model training limits, trainable taste, downstream review costs from AI output, and distribution-market fit. These are fresh proposals #1, #3, #6, and #8.
+- The fresh run also proposed greenfield software-factory setup (#2), research limitations (#4), failure clustering (#5), and founders using competing products (#7). The old initial transcript had no proposals for these four topics.
+- The old run routed downstream review costs as a revision to its existing ownership/comprehension opinion. The fresh run proposed a separate addition. The starting opinion files and agent workflow differ, so this comparison does not isolate which change caused that routing choice.
+- The old first run wrote `TEST_OPINIONS.md`; fresh production writes `OPINIONS.md`. The archived first-run transcript and its final Git diff were inspected, not imported into the new runtime.
 
 ## Recovery and cleanup
 
@@ -59,4 +69,4 @@ The directory is private. No full restore rehearsal was performed. The old Postg
 
 ## Verification
 
-`uv run pytest -q`: 228 passed, 5 skipped. `uv run ruff check .`: passed. `uv run pyright`: zero errors and warnings. The ripgrep deployment passed health and the 107-file source comparison. Ripgrep 14.1.1 successfully executed all three previously failing document searches. The existing retry remains awaiting user input; no proposals were regenerated. No application code was changed. Product-contract and operational documentation changes are committed separately from the pinned deployment.
+`uv run pytest -q`: 228 passed, 5 skipped. `uv run ruff check .`: passed. `uv run pyright`: zero errors and warnings. The ripgrep deployment passed health and the 107-file source comparison. Ripgrep 14.1.1 successfully executed all three previously failing document searches. The dependency deployment preserved the awaiting retry without regenerating proposals; that retry subsequently completed through user approval. No application code was changed. Product-contract and operational documentation changes are committed separately from the pinned deployment.
