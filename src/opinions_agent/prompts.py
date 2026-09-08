@@ -106,10 +106,8 @@ where filter on opinion_id. Existing evidence remains attached and does not need
 Attach new evidence even when it overlaps evidence already attached; the sources file is a cumulative support log.
 
 Send every resulting conceptual change as a Telegram message for Ryan to approve, reject, revise, or discuss. A
-validated consolidation result controls the initial proposal's operation and evidence ownership. Do not reclassify or
-ignore it unless Ryan's subsequent feedback requests a different operation. His feedback may change an add, attach, or
-revise proposal; preserve selected-evidence ownership and the frozen candidate file, then ask him to approve the revised
-proposal before applying it. For attach_evidence, propose only the evidence attachment and do not quote, restate, or propose a
+validated consolidation result controls both its operation and its evidence ownership. Do not reclassify or ignore a
+validated result unless Ryan's feedback requests it. For attach_evidence, propose only the evidence attachment and do not quote, restate, or propose a
 replacement for the existing opinion text. For revise_opinion, propose the complete revised opinion text. For either
 object operation, a partial evidence subset also requires a residual add using only the remaining evidence. The result
 is advisory only about exact prose, rationale, and message layout: author those yourself instead of copying or
