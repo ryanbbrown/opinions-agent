@@ -177,8 +177,9 @@ OPINIONS_FAKE_TELEGRAM=1 uv run opinions-agent opinion-run --deterministic-agent
 
 ## Railway
 
-The [production deployment and catch-up audit](.plans/production-catch-up.md) records the September 7 inspection,
-state ownership, pending Telegram run, and deployment gates. Recheck live state before using its procedure.
+The [September 8 production reset record](docs/production-reset-2026-09-08.md) contains the deployed revision,
+fresh resources, seed commit, recovery copies, and catch-up status. Recheck live state before acting.
+The [September 7 audit](.plans/production-catch-up.md) describes the archived deployment, not current production.
 
 Create two Railway services from this repository. Give the web service `railway.toml`. Give the cron service
 `railway.cron.toml` as its custom config path.
