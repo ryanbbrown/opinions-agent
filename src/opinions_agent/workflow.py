@@ -862,7 +862,22 @@ async def _handle_message(
 
     reply_to = (message.get("reply_to_message") or {}).get("message_id")
     if reply_to is None:
-        return "no_pending_run"
+        if active is None or active.status != RunStatus.AWAITING_USER.value:
+            return "no_pending_run"
+        inbound.opinion_run_id = active.id
+        inbound.status = "recorded"
+        session.commit()
+        return await _resume_from_telegram(
+            session=session,
+            settings=settings,
+            agent=agent,
+            telegram=telegram,
+            run=active,
+            prompt_fragment=(
+                f"{_responses_prompt(session, active)}\n\nStandalone user feedback (not approval):\n{text}"
+            ),
+            result="resumed",
+        )
     outbound = _find_outbound_message(session, chat_id=chat_id, message_id=reply_to)
     if outbound is None or outbound.opinion_run_id is None:
         return "no_pending_run"

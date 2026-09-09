@@ -503,25 +503,6 @@ async def test_live_resumed_turn_renews_lease_until_process_loss(
     assert settings.opinions_target_path.read_text(encoding="utf-8") == original
 
 
-async def test_free_text_without_reply_does_not_resume(session, settings: Settings, opinions_repo: Path) -> None:
-    seed_corpus(settings)
-    telegram = FakeTelegramClient()
-    run = await start_run(session, settings, telegram)
-
-    result = await handle(
-        session,
-        settings,
-        telegram,
-        {
-            "update_id": 302,
-            "message": {"message_id": 303, "chat": {"id": settings.telegram_allowed_chat_id}, "text": "hello"},
-        },
-    )
-
-    assert result == "no_pending_run"
-    assert run.status == RunStatus.AWAITING_USER.value
-
-
 async def test_duplicate_update_is_ignored(session, settings: Settings, opinions_repo: Path) -> None:
     seed_corpus(settings)
     telegram = FakeTelegramClient()

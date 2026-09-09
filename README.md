@@ -56,12 +56,13 @@ PostgreSQL owns cycles, batches, evidence assignments, leases, runs, Telegram id
    those messages exactly, with deterministic `opinion-run:<run_id>:turn:<turn_seq>:message:<index>` idempotency keys,
    and stores Telegram's real `(chat_id, message_id)` values. Keep, attach, and revise operations affect only proposal
    text and conversation state. Candidate and consolidation working state does not edit durable opinion files before
-   approval and does not add a recovery checkpoint. Attach-only proposals do not repeat existing opinion text.
+   approval and does not add a recovery checkpoint. Attach-only proposals show the existing opinion text unchanged.
 5. Telegram callbacks and replies are recorded against the stored outbound message by `(chat_id, message_id)`.
    Callback data must match a button that was actually sent. A single response does not resume the agent until every
    required message in the current turn has a response.
-6. Exact uppercase `GO` and `SKIP` from `TELEGRAM_ALLOWED_CHAT_ID` resume the same agent conversation immediately as
-   concrete user input. The app does not interpret these commands as proposal accept/reject decisions.
+6. Standalone text from `TELEGRAM_ALLOWED_CHAT_ID` resumes an awaiting conversation immediately, including any recorded
+   current-turn responses. It is feedback, not approval. Exact uppercase `GO` and `SKIP` also resume the conversation;
+   the app does not interpret these commands as proposal accept/reject decisions.
 7. The agent writes the opinion artifacts directly when the conversation has enough approval or revision context, calls
    the same validator the app uses, and returns `done`. If it needs help, it asks in Telegram and returns
    `awaiting_user`; only app-owned technical failures stop the run.
@@ -221,7 +222,7 @@ Smoke checklist after a deploy:
 1. `curl https://<service>/healthz` returns `{"status":"ok"}`.
 2. `init-runtime` logged `runtime initialized` (dirs, repo checkout, migrations).
 3. `cron-trigger` returns a cycle ID. A repeated request returns the active cycle.
-4. Answering all required current-turn messages, or sending exact `GO` / `SKIP`, resumes the same agent conversation.
+4. Answering all required current-turn messages or sending standalone text resumes the same awaiting conversation.
    Successful approved changes push a commit to the opinions repo touching only `OPINIONS.md` and
    `OPINIONS_SOURCES.jsonl`.
 5. After every batch succeeds, the next batch starts automatically. The cycle folder moves to `completed/` last.
